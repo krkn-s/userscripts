@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         YouTube.com — Transcript Copy & Download (Essential)
+// @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps and basic metadata.
 // @version      2026-04-24
 // @author       https://github.com/krkn-s

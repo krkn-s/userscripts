@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps and basic metadata.
-// @version      2026.04.28.1
+// @version      2026.04.28.2
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -88,7 +88,7 @@
             align-items: center;
             justify-content: center;
             padding: 6px 12px;
-            margin-left: 8px;
+            margin: 0;
             border: 1px solid var(--yt-spec-10-percent-layer, rgba(255, 255, 255, 0.2));
             border-radius: 16px;
             font: 500 13px/1.4 "Roboto","Arial",sans-serif;
@@ -112,8 +112,12 @@
         .${PREFIX}-bar {
             display: flex;
             gap: 8px;
-            margin: 12px 0;
+            align-items: center;
             flex-wrap: wrap;
+            margin: 0 0 0 12px;
+        }
+        .${PREFIX}-bar--fallback {
+            margin: 12px 0;
         }
         .${PREFIX}-toast {
             position: fixed;
@@ -334,16 +338,30 @@
 
     function ensureButtonHost() {
         let host = document.getElementById(HOST_ID);
+        const target = getButtonHostTarget();
+
+        if (target) {
+            if (!host) {
+                host = document.createElement('div');
+                host.id = HOST_ID;
+            }
+            host.className = `${PREFIX}-bar`;
+            if (host.parentNode !== target.parent || host.previousElementSibling !== target.after) {
+                target.parent.insertBefore(host, target.after.nextSibling);
+            }
+            return host;
+        }
+
         if (host) return host;
 
         const player = document.querySelector('ytd-watch-flexy #player');
-        if (!player || !player.parentNode) return null;
+        const below = document.querySelector('ytd-watch-flexy #below');
+        if (!player?.parentNode && !below?.parentNode) return null;
 
         host = document.createElement('div');
         host.id = HOST_ID;
-        host.className = `${PREFIX}-bar`;
+        host.className = `${PREFIX}-bar ${PREFIX}-bar--fallback`;
 
-        const below = document.querySelector('ytd-watch-flexy #below');
         if (below?.parentNode) {
             below.parentNode.insertBefore(host, below);
         } else {
@@ -351,6 +369,30 @@
         }
 
         return host;
+    }
+
+    function getButtonHostTarget() {
+        const watchMetadata = document.querySelector('ytd-watch-metadata');
+        const topRow = watchMetadata?.querySelector('#top-row');
+        if (!topRow) return null;
+
+        const subscribeButton = topRow.querySelector('#subscribe-button');
+        if (subscribeButton?.parentNode) {
+            return {
+                parent: subscribeButton.parentNode,
+                after: subscribeButton,
+            };
+        }
+
+        const owner = topRow.querySelector('#owner');
+        if (owner?.parentNode) {
+            return {
+                parent: owner.parentNode,
+                after: owner,
+            };
+        }
+
+        return null;
     }
 
     function createButton(id, label, handler) {

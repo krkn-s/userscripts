@@ -10,7 +10,7 @@ The exported transcript includes basic video metadata, the video link, and times
 ## Current Version
 
 - Script file: `userscripts/youtube-transcript-copy-download.user.js`
-- Script version: `2026.04.28.1`
+- Script version: `2026.04.28.2`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 

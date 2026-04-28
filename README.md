@@ -8,30 +8,19 @@ work with userscript managers that support standard userscript metadata.
 
 ## Available Scripts
 
-| Script | Site | Description | Install | Docs |
-| --- | --- | --- | --- | --- |
-| Perplexity Hide Space Threads | Perplexity | Adds a Library toggle to hide threads attached to Spaces or Bookmarks. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/perplexity-hide-non-space-threads.user.js) | [Docs](docs/perplexity-hide-non-space-threads.md) |
-| YouTube Default to My Subscriptions | YouTube | Redirects signed-in YouTube home visits to the Subscriptions page. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-default-to-subscriptions.user.js) | [Docs](docs/youtube-default-to-subscriptions.md) |
-| YouTube Transcript Copy & Download | YouTube | Adds copy and download controls for timestamped YouTube transcripts. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-transcript-copy-download.user.js) | [Docs](docs/youtube-transcript-copy-download.md) |
+| Script | Site | What it does | Install |
+| --- | --- | --- | --- |
+| [Perplexity Hide Space Threads](docs/perplexity-hide-non-space-threads.md) | Perplexity | Hides Library threads attached to Spaces or Bookmarks. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/perplexity-hide-non-space-threads.user.js) |
+| [YouTube Default to My Subscriptions](docs/youtube-default-to-subscriptions.md) | YouTube | Redirects signed-in home page visits to Subscriptions. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-default-to-subscriptions.user.js) |
+| [YouTube Transcript Copy & Download](docs/youtube-transcript-copy-download.md) | YouTube | Copies or downloads timestamped video transcripts. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-transcript-copy-download.user.js) |
 
 ## Repository Layout
 
 ```text
-.
-├── README.md
-├── userscripts/
-│   ├── perplexity-hide-non-space-threads.user.js
-│   ├── youtube-default-to-subscriptions.user.js
-│   └── youtube-transcript-copy-download.user.js
-└── docs/
-    ├── perplexity-hide-non-space-threads.md
-    ├── youtube-default-to-subscriptions.md
-    └── youtube-transcript-copy-download.md
+userscripts/*.user.js  installable userscripts
+docs/*.md              per-script documentation
+README.md              collection index
 ```
-
-- `userscripts/` contains installable `.user.js` files only.
-- `docs/` contains one detailed Markdown document per userscript.
-- The root `README.md` is the collection index.
 
 ## Installing a Script
 

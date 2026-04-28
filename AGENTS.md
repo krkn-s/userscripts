@@ -39,7 +39,8 @@ Use plain JavaScript with no bundler or external runtime dependency. Keep script
 
 - Use two-space indentation for new scripts unless editing a file with an established style.
 - Keep metadata blocks complete: `@name`, `@namespace`, `@version`, `@description`, `@author`, URL fields, `@match`, `@run-at`, `@grant`, and `@license`.
-- Use lowercase kebab-case filenames ending in `.user.js`.
+- Use lowercase kebab-case filenames. Userscripts must end in `.user.js`, and the matching documentation file must reuse the same base name with `.md`.
+- Prefer concise product/action names without dates or noisy domain fragments, for example `youtube-transcript-copy-download.user.js` and `docs/youtube-transcript-copy-download.md`.
 - Point `@downloadURL` and `@updateURL` to the raw file under `https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/`.
 
 ## Testing Guidelines

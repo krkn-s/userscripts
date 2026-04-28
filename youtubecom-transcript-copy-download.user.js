@@ -2,8 +2,12 @@
 // @name         YouTube.com — Transcript Copy & Download (Essential)
 // @description  Copy or download the transcript of the current YouTube video with timestamps and basic metadata.
 // @version      2026-04-24
-// @author       3545.fr
-// @namespace    https://3545.fr
+// @author       https://github.com/krkn-s
+// @namespace    https://github.com/krkn-s
+// @homepageURL  https://github.com/krkn-s/userscripts-youtube_com-transcript_copy_download
+// @supportURL   https://github.com/krkn-s/userscripts-youtube_com-transcript_copy_download/issues
+// @downloadURL  https://raw.githubusercontent.com/krkn-s/userscripts-youtube_com-transcript_copy_download/main/youtubecom-transcript-copy-download.user.js
+// @updateURL    https://raw.githubusercontent.com/krkn-s/userscripts-youtube_com-transcript_copy_download/main/youtubecom-transcript-copy-download.user.js
 // @match        https://youtube.com/*
 // @match        https://*.youtube.com/*
 // @grant        GM_setClipboard

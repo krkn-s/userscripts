@@ -29,19 +29,6 @@ README.md              collection index
 3. Make sure the script is enabled for the target website.
 4. Reload the target website.
 
-## Development
-
-Before publishing a userscript change, check its JavaScript syntax:
-
-```sh
-node --check userscripts/perplexity-hide-non-space-threads.user.js
-node --check userscripts/youtube-default-to-subscriptions.user.js
-node --check userscripts/youtube-transcript-copy-download.user.js
-```
-
-Also search the repository for stale owner names, retired dated filenames, and
-outdated version notes before release.
-
 ## License
 
 MIT

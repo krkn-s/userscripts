@@ -10,6 +10,8 @@ work with userscript managers that support standard userscript metadata.
 
 | Script | Site | Description | Install | Docs |
 | --- | --- | --- | --- | --- |
+| Perplexity Hide Space Threads | Perplexity | Adds a Library toggle to hide threads attached to Spaces or Bookmarks. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/perplexity-hide-non-space-threads.user.js) | [Docs](docs/perplexity-hide-non-space-threads.md) |
+| YouTube Default to My Subscriptions | YouTube | Redirects signed-in YouTube home visits to the Subscriptions page. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-default-to-subscriptions.user.js) | [Docs](docs/youtube-default-to-subscriptions.md) |
 | YouTube Transcript Copy & Download | YouTube | Adds copy and download controls for timestamped YouTube transcripts. | [Raw install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-transcript-copy-download.user.js) | [Docs](docs/youtube-transcript-copy-download.md) |
 
 ## Repository Layout
@@ -18,8 +20,12 @@ work with userscript managers that support standard userscript metadata.
 .
 ├── README.md
 ├── userscripts/
+│   ├── perplexity-hide-non-space-threads.user.js
+│   ├── youtube-default-to-subscriptions.user.js
 │   └── youtube-transcript-copy-download.user.js
 └── docs/
+    ├── perplexity-hide-non-space-threads.md
+    ├── youtube-default-to-subscriptions.md
     └── youtube-transcript-copy-download.md
 ```
 
@@ -39,6 +45,8 @@ work with userscript managers that support standard userscript metadata.
 Before publishing a userscript change, check its JavaScript syntax:
 
 ```sh
+node --check userscripts/perplexity-hide-non-space-threads.user.js
+node --check userscripts/youtube-default-to-subscriptions.user.js
 node --check userscripts/youtube-transcript-copy-download.user.js
 ```
 

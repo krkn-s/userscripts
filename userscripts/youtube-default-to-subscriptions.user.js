@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Default to My Subscriptions
 // @namespace    https://github.com/krkn-s
-// @version      1.1
+// @version      2026.04.28.1
 // @description  Redirects signed-in YouTube home visits to the Subscriptions page.
 // @author       https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts

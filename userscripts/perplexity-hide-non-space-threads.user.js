@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity Library - Hide Space Threads
 // @namespace    https://github.com/krkn-s
-// @version      1.0.0
+// @version      2026.04.28.1
 // @description  Adds a Library button to hide Perplexity threads that are in a custom Space.
 // @author       https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts

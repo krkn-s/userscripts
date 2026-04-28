@@ -7,7 +7,7 @@ When you open the YouTube home page while signed in, the script sends you to `ht
 ## Current Version
 
 - Script file: `userscripts/youtube-default-to-subscriptions.user.js`
-- Script version: `1.1`
+- Script version: `2026.04.28.1`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 

@@ -7,7 +7,7 @@ It adds a `Hide spaces` button to `https://www.perplexity.ai/library`. When enab
 ## Current Version
 
 - Script file: `userscripts/perplexity-hide-non-space-threads.user.js`
-- Script version: `1.0.0`
+- Script version: `2026.04.28.1`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 

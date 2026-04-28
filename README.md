@@ -3,8 +3,9 @@
 A collection of userscripts maintained by <https://github.com/krkn-s>.
 
 Install a userscript manager first. These scripts are used with the Safari
-[Userscripts](https://github.com/quoid/userscripts) extension, and should also
-work with userscript managers that support standard userscript metadata.
+[Userscripts](https://github.com/quoid/userscripts) extension. For other
+browsers, [Violentmonkey](https://github.com/violentmonkey/violentmonkey) is a
+good alternative.
 
 ## Available Scripts
 

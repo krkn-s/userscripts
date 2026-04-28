@@ -4,10 +4,10 @@
 // @version      2026-04-24
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
-// @homepageURL  https://github.com/krkn-s/userscripts-youtube_com-transcript_copy_download
-// @supportURL   https://github.com/krkn-s/userscripts-youtube_com-transcript_copy_download/issues
-// @downloadURL  https://raw.githubusercontent.com/krkn-s/userscripts-youtube_com-transcript_copy_download/main/youtubecom-transcript-copy-download.user.js
-// @updateURL    https://raw.githubusercontent.com/krkn-s/userscripts-youtube_com-transcript_copy_download/main/youtubecom-transcript-copy-download.user.js
+// @homepageURL  https://github.com/krkn-s/userscripts
+// @supportURL   https://github.com/krkn-s/userscripts/issues
+// @downloadURL  https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-transcript-copy-download.user.js
+// @updateURL    https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/youtube-transcript-copy-download.user.js
 // @match        https://youtube.com/*
 // @match        https://*.youtube.com/*
 // @grant        GM_setClipboard

@@ -7,7 +7,7 @@ It adds a `Hide spaces` button to `https://www.perplexity.ai/library`. When enab
 ## Current Version
 
 - Script file: `userscripts/perplexity-hide-non-space-threads.user.js`
-- Script version: `2026.04.28.1`
+- Script version: `2026.05.04.1`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 
@@ -17,7 +17,7 @@ It adds a `Hide spaces` button to `https://www.perplexity.ai/library`. When enab
 - No network requests.
 - No Perplexity data mutation.
 - Works with existing and newly loaded Library threads.
-- Detects Spaces through Perplexity's `/spaces/...` links.
+- Detects Spaces and Bookmarks through the current Library collection pill UI, with a legacy fallback for `/spaces/...` links.
 - Resets the filter state after navigation or reload.
 
 ## Installation
@@ -49,7 +49,7 @@ The filter state is not persisted after reload.
 ## Compatibility Notes
 
 - The script runs on `https://www.perplexity.ai/library*`.
-- It is DOM-based and depends on Perplexity exposing Space links as `/spaces/...`.
+- It is DOM-based and supports the current table-based Library layout plus an older `/spaces/...`-link layout.
 - If Perplexity changes its Library markup, the row or Space detection selectors may need an update.
 
 ## Development

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity Library - Hide Space Threads
 // @namespace    https://github.com/krkn-s
-// @version      2026.04.28.1
+// @version      2026.05.04.1
 // @description  Adds a Library button to hide Perplexity threads that are in a custom Space.
 // @author       https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -83,10 +83,29 @@
 
   function getThreadsPanel() {
     return (
+      document.querySelector('[role="tabpanel"][aria-labelledby$="trigger-threads"]:not([hidden])') ||
       document.querySelector('[role="tabpanel"][aria-labelledby$="trigger-threads"]') ||
+      document.querySelector('[id$="content-threads"]:not([hidden])') ||
       document.querySelector('[id$="content-threads"]') ||
       document
     );
+  }
+
+  function getThreadsTable() {
+    return getThreadsPanel().querySelector('[role="table"]');
+  }
+
+  function getCurrentThreadRows() {
+    const table = getThreadsTable();
+    if (!table) return null;
+
+    const directRows = Array.from(table.children).filter((node) => {
+      return node instanceof HTMLElement && node.getAttribute("role") === "row";
+    });
+
+    if (directRows.length > 0) return directRows;
+
+    return Array.from(table.querySelectorAll('[role="row"]'));
   }
 
   function getThreadRowFromSearchLink(link) {
@@ -112,7 +131,7 @@
     return null;
   }
 
-  function getThreadRows() {
+  function getLegacyThreadRows() {
     const panel = getThreadsPanel();
     const rows = new Set();
 
@@ -124,8 +143,30 @@
     return Array.from(rows);
   }
 
+  function getThreadRows() {
+    const currentRows = getCurrentThreadRows();
+    if (currentRows) return currentRows;
+    return getLegacyThreadRows();
+  }
+
+  function getRowDivider(row) {
+    const divider = row.previousElementSibling;
+    if (!(divider instanceof HTMLElement)) return null;
+    if (divider.getAttribute("role")) return null;
+    if (!divider.className.includes("border-subtlest")) return null;
+    return divider;
+  }
+
+  function setRowHidden(row, hidden) {
+    row.classList.toggle(CLASS_HIDDEN, hidden);
+    getRowDivider(row)?.classList.toggle(CLASS_HIDDEN, hidden);
+  }
+
   function hasSpace(row) {
-    return Boolean(row.querySelector('a[href^="/spaces/"]'));
+    return Boolean(
+      row.querySelector('[data-testid="task-collection-pill"]') ||
+        row.querySelector('a[href^="/spaces/"]')
+    );
   }
 
   function applyFilter() {
@@ -140,7 +181,7 @@
 
       getThreadRows().forEach((row) => {
         const shouldHide = STATE.enabled && hasSpace(row);
-        row.classList.toggle(CLASS_HIDDEN, shouldHide);
+        setRowHidden(row, shouldHide);
 
         if (shouldHide) hidden += 1;
         else visible += 1;
@@ -164,10 +205,32 @@
       : "Hide threads attached to a Space or Bookmarks";
   }
 
-  function getFilterBar() {
+  function getCurrentFilterBar() {
+    const panel = getThreadsPanel();
+    if (!(panel instanceof HTMLElement)) return null;
+    if (!getThreadsTable()) return null;
+
+    const stickyBar = Array.from(panel.children).find((node) => {
+      return (
+        node instanceof HTMLElement &&
+        !node.querySelector('[role="table"]') &&
+        Boolean(node.querySelector('button[aria-haspopup="menu"]'))
+      );
+    });
+
+    if (!stickyBar) return null;
+
+    return stickyBar.firstElementChild instanceof HTMLElement ? stickyBar.firstElementChild : stickyBar;
+  }
+
+  function getLegacyFilterBar() {
     const panel = getThreadsPanel();
     const selectButton = panel.querySelector('button[aria-label="Select"]');
     return selectButton?.closest(".gap-sm.flex.items-center") || null;
+  }
+
+  function getFilterBar() {
+    return getCurrentFilterBar() || getLegacyFilterBar();
   }
 
   function ensureButton() {

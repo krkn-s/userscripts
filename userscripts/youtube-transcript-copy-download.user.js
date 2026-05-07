@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps and basic metadata.
-// @version      2026.04.28.2
+// @version      2026.05.07.1
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -80,6 +80,7 @@
         lastError: null,
         lastDomDebug: null,
         debugBridgeInjected: false,
+        attemptLog: [],
     };
 
     const style = `
@@ -197,13 +198,14 @@
 
         if (videoId !== state.videoId) {
             state.videoId = videoId;
-        const cachedLines = state.transcriptsByVideo.get(videoId);
-        state.transcriptCache = Array.isArray(cachedLines) ? cachedLines : null;
+            const cachedLines = state.transcriptsByVideo.get(videoId);
+            state.transcriptCache = Array.isArray(cachedLines) ? cachedLines : null;
             state.poToken = null;
             state.potCaptureInFlight = null;
             state.lastStrategy = null;
             state.lastError = null;
             state.lastDomDebug = null;
+            state.attemptLog = [];
             log(`navigated to video ${videoId}`);
         }
 
@@ -218,6 +220,7 @@
         state.lastStrategy = null;
         state.lastError = null;
         state.lastDomDebug = null;
+        state.attemptLog = [];
         clearTimeout(state.buttonRetryTimer);
         state.buttonRetryTimer = null;
         destroyButtonHost();
@@ -262,6 +265,9 @@
             visibleTimestampCount: countVisibleTranscriptTimestamps(roots),
             dom: state.lastDomDebug,
             textBlob: buildTextBlobDebug(roots),
+            captionTracks: getCaptionTrackDebug(),
+            transcriptParams: getTranscriptParamDebug(),
+            attempts: state.attemptLog.slice(-16),
         };
     }
 
@@ -498,31 +504,53 @@
             state.transcriptsByVideo.delete(state.videoId);
         }
 
-        const viaDom = await fetchDomTranscript();
-        if (viaDom.length) {
+        recordAttempt('api:caption-tracks', 'start', getCaptionTrackDebug());
+        const viaCaptionTrack = await fetchCaptionTrackTranscript();
+        if (viaCaptionTrack?.length) {
             rememberError(null);
-            state.transcriptCache = viaDom;
-            cacheTranscript(state.videoId, viaDom);
-            return viaDom;
+            recordAttempt('api:caption-tracks', 'success', { lines: viaCaptionTrack.length });
+            state.transcriptCache = viaCaptionTrack;
+            cacheTranscript(state.videoId, viaCaptionTrack);
+            return viaCaptionTrack;
         }
+        recordAttempt('api:caption-tracks', 'miss', getCaptionTrackDebug());
 
-        const viaApi = await tryFetchTranscript();
-        if (viaApi?.length) {
+        recordAttempt('api:innertube', 'start', getTranscriptParamDebug());
+        const viaInnertube = await fetchInnertubeTranscriptLines();
+        if (viaInnertube?.length) {
             rememberError(null);
-            state.transcriptCache = viaApi;
-            return viaApi;
+            recordAttempt('api:innertube', 'success', { lines: viaInnertube.length });
+            state.transcriptCache = viaInnertube;
+            return viaInnertube;
         }
+        recordAttempt('api:innertube', 'miss', getTranscriptParamDebug());
+
+        recordAttempt('dom:existing', 'start');
+        const viaDomExisting = await fetchDomTranscript({ allowOpen: false });
+        if (viaDomExisting.length) {
+            rememberError(null);
+            recordAttempt('dom:existing', 'success', { lines: viaDomExisting.length });
+            state.transcriptCache = viaDomExisting;
+            cacheTranscript(state.videoId, viaDomExisting);
+            return viaDomExisting;
+        }
+        recordAttempt('dom:existing', 'miss');
+
+        recordAttempt('dom:open-panel', 'start');
+        const viaDomOpened = await fetchDomTranscript({ allowOpen: true });
+        if (viaDomOpened.length) {
+            rememberError(null);
+            recordAttempt('dom:open-panel', 'success', { lines: viaDomOpened.length });
+            state.transcriptCache = viaDomOpened;
+            cacheTranscript(state.videoId, viaDomOpened);
+            return viaDomOpened;
+        }
+        recordAttempt('dom:open-panel', 'miss');
 
         throw new Error('Transcript unavailable.');
     }
 
-    async function tryFetchTranscript() {
-        rememberStrategy('api:innertube');
-        const viaInnertube = await fetchTranscriptFromInnertube(state.videoId);
-        if (viaInnertube?.length) {
-            return viaInnertube;
-        }
-
+    async function fetchCaptionTrackTranscript() {
         rememberStrategy('api:timedtext');
         const track = pickCaptionTrack();
         if (!track || !track.baseUrl) {
@@ -563,6 +591,11 @@
         }
 
         return null;
+    }
+
+    async function fetchInnertubeTranscriptLines() {
+        rememberStrategy('api:innertube');
+        return fetchTranscriptFromInnertube(state.videoId);
     }
 
     function appendFmt(baseUrl) {
@@ -710,16 +743,33 @@
         return null;
     }
 
-    function pickCaptionTrack() {
+    function getCaptionTracks() {
         const response = getPlayerResponse();
         const tracks = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (!Array.isArray(tracks) || tracks.length === 0) return null;
+        return Array.isArray(tracks) ? tracks : [];
+    }
+
+    function pickCaptionTrack() {
+        const tracks = getCaptionTracks();
+        if (!tracks.length) return null;
 
         const preferredLanguage = navigator.language?.toLowerCase();
         const directMatch = preferredLanguage
             ? tracks.find(track => track.languageCode?.toLowerCase() === preferredLanguage)
             : null;
         return directMatch || tracks.find(track => !track.kind) || tracks[0];
+    }
+
+    function getCaptionTrackDebug() {
+        const tracks = getCaptionTracks();
+        const picked = pickCaptionTrack();
+        return {
+            count: tracks.length,
+            languages: tracks.slice(0, 8).map(track => track?.languageCode || track?.name?.simpleText || ''),
+            pickedLanguage: picked?.languageCode || '',
+            pickedKind: picked?.kind || '',
+            hasBaseUrl: Boolean(picked?.baseUrl),
+        };
     }
 
     async function ensurePoToken() {
@@ -827,21 +877,35 @@
         return null;
     }
 
-    async function fetchDomTranscript() {
-        rememberStrategy('dom:modern-existing');
+    async function fetchDomTranscript(options = {}) {
+        const { allowOpen = true } = options;
+
+        rememberStrategy(allowOpen ? 'dom:existing' : 'dom:existing-only');
+        await ensureTranscriptTabSelected();
+
         let modernLines = parseModernTranscript();
         if (modernLines.length) {
             state.lastDomDebug = buildDomDebug(queryModernTranscriptSegments(), modernLines.map(line => ({ line })));
             return modernLines;
         }
 
-        rememberStrategy('dom:existing');
         let nodes = queryTranscriptNodes();
-        if (!nodes.length) {
+        if (nodes.length) {
+            modernLines = parseModernTranscript();
+            if (modernLines.length) {
+                state.lastDomDebug = buildDomDebug(queryModernTranscriptSegments(), modernLines.map(line => ({ line })));
+                return modernLines;
+            }
+            nodes = queryTranscriptNodes();
+        } else if (allowOpen) {
             rememberStrategy('dom:open-panel');
             await openTranscriptPanel();
             await ensureTranscriptTabSelected();
-            await waitForElement(() => getModernTranscriptRoot()?.querySelector('transcript-segment-view-model'), 7000);
+            await waitForElement(() => (
+                queryModernTranscriptSegments().length
+                || queryTranscriptNodes().length
+                || getModernTranscriptRoot()?.querySelector?.('[panel-content-visible], transcript-segment-view-model')
+            ), 7000);
 
             rememberStrategy('dom:modern-opened');
             modernLines = parseModernTranscript();
@@ -851,14 +915,6 @@
             }
 
             nodes = await waitForTranscriptNodes(7000);
-        } else {
-            await ensureTranscriptTabSelected();
-            modernLines = parseModernTranscript();
-            if (modernLines.length) {
-                state.lastDomDebug = buildDomDebug(queryModernTranscriptSegments(), modernLines.map(line => ({ line })));
-                return modernLines;
-            }
-            nodes = queryTranscriptNodes();
         }
         if (!nodes.length) {
             rememberStrategy('dom:parse-text-blob');
@@ -941,16 +997,9 @@
     }
 
     function getModernTranscriptRoot() {
-        const selectors = [
-            'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]',
-            'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]',
-            'yt-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]',
-        ];
-        for (const selector of selectors) {
-            const root = document.querySelector(selector);
-            if (root && !isHiddenNode(root)) return root;
-        }
-        return null;
+        const scoredRoots = getScoredTranscriptRoots();
+        const modern = scoredRoots.find(item => item.node.querySelector('transcript-segment-view-model'));
+        return modern?.node || scoredRoots[0]?.node || null;
     }
 
     function queryModernTranscriptSegments() {
@@ -983,11 +1032,14 @@
     }
 
     function queryTranscriptRoots() {
-        const roots = [];
-        findTranscriptPanelCandidates().forEach(node => {
-            if (!roots.includes(node)) roots.push(node);
-        });
-        return roots;
+        return getScoredTranscriptRoots().map(item => item.node);
+    }
+
+    function getScoredTranscriptRoots() {
+        return findTranscriptPanelCandidates()
+            .map(node => ({ node, score: scoreTranscriptRoot(node) }))
+            .filter(item => item.score > 0)
+            .sort((a, b) => b.score - a.score);
     }
 
     function findTranscriptPanelCandidates() {
@@ -1020,32 +1072,8 @@
     }
 
     function isLikelyTranscriptRoot(node) {
-        if (!node || node === document) return true;
-        if (isForbiddenTranscriptNode(node)) return false;
-        if (isHiddenNode(node)) return false;
-
-        const id = node.id || '';
-        const tag = node.tagName?.toLowerCase() || '';
-        const targetId = node.getAttribute?.('target-id') || '';
-        const visibility = node.getAttribute?.('visibility') || '';
-        const ariaLabel = node.getAttribute?.('aria-label') || '';
-        const text = normalizeWhitespace(node.textContent || '').slice(0, 3000);
-        const signature = `${id} ${tag} ${targetId} ${visibility} ${ariaLabel}`;
-        const hasTranscriptSignature = /transcript|segment|engagement-panel-searchable-transcript|PAmodern_transcript_view/i.test(signature);
-        const hasTranscriptText = TRANSCRIPT_TAB_KEYWORDS.some(keyword => normalizeString(text).includes(keyword));
-
-        return hasTranscriptSignature
-            || (hasTranscriptText && isTranscriptPanelish(node))
-            || hasTranscriptHeader(node);
-    }
-
-    function isTranscriptPanelish(node) {
-        const tag = node.tagName?.toLowerCase() || '';
-        const targetId = node.getAttribute?.('target-id') || '';
-        const visibility = node.getAttribute?.('visibility') || '';
-        return /transcript|engagement-panel/.test(tag)
-            || /transcript|PAmodern_transcript_view/i.test(targetId)
-            || visibility === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED';
+        if (!node || node === document) return false;
+        return scoreTranscriptRoot(node) > 0;
     }
 
     function isForbiddenTranscriptNode(node) {
@@ -1076,12 +1104,62 @@
         return TRANSCRIPT_TAB_KEYWORDS.some(keyword => headerText.includes(keyword));
     }
 
-    function isHiddenNode(node) {
+    function hasVisibleTranscriptContent(node) {
+        if (!node || typeof node.querySelector !== 'function') return false;
+        return Boolean(node.querySelector(
+            'transcript-segment-view-model, [panel-content-visible], textarea[aria-label*="transcript" i], textarea[placeholder*="transcript" i], [role="tablist"] button[role="tab"]'
+        ));
+    }
+
+    function isExplicitlyHiddenNode(node) {
         if (!node || node === document) return false;
         return node.hidden
             || node.getAttribute?.('hidden') !== null
             || node.getAttribute?.('aria-hidden') === 'true'
             || node.getAttribute?.('visibility') === 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN';
+    }
+
+    function isHiddenNode(node) {
+        if (!node || node === document) return false;
+        if (hasVisibleTranscriptContent(node)) return false;
+        return isExplicitlyHiddenNode(node);
+    }
+
+    function scoreTranscriptRoot(node) {
+        if (!node || node === document) return 0;
+        if (isForbiddenTranscriptNode(node)) return 0;
+
+        const hasVisibleContent = hasVisibleTranscriptContent(node);
+        if (isExplicitlyHiddenNode(node) && !hasVisibleContent) return 0;
+
+        const id = node.id || '';
+        const tag = node.tagName?.toLowerCase() || '';
+        const targetId = node.getAttribute?.('target-id') || '';
+        const visibility = node.getAttribute?.('visibility') || '';
+        const text = normalizeWhitespace(node.textContent || '').slice(0, 2500);
+        const normalizedText = normalizeString(text);
+        const segmentCount = node.querySelectorAll?.('transcript-segment-view-model').length || 0;
+        const timestampNodeCount = node.querySelectorAll?.('.ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp, .cue-group-start-offset, .cue-time, .timestamp').length || 0;
+        const hasSearchInput = Boolean(node.querySelector?.('textarea[aria-label*="transcript" i], textarea[placeholder*="transcript" i]'));
+        const hasTablist = Boolean(node.querySelector?.('[role="tablist"] button[role="tab"]'));
+        const hasPanelVisible = Boolean(node.querySelector?.('[panel-content-visible]'));
+        const hasSpinner = Boolean(node.querySelector?.('yt-content-loading-renderer, tp-yt-paper-spinner, tp-yt-paper-spinner-lite'));
+        let score = 0;
+
+        if (/PAmodern_transcript_view|engagement-panel-searchable-transcript|transcript/i.test(targetId)) score += 60;
+        if (/transcript/.test(tag)) score += 20;
+        if (id === 'segments-container') score += 20;
+        if (visibility === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') score += 30;
+        if (hasPanelVisible) score += 40;
+        if (segmentCount) score += 120 + Math.min(segmentCount, 60);
+        if (!segmentCount && timestampNodeCount) score += Math.min(timestampNodeCount * 3, 30);
+        if (hasSearchInput) score += 20;
+        if (hasTablist) score += 20;
+        if (hasTranscriptHeader(node)) score += 10;
+        if (TRANSCRIPT_TAB_KEYWORDS.some(keyword => normalizedText.includes(keyword))) score += 10;
+        if (hasSpinner && !segmentCount && !hasPanelVisible) score -= 20;
+
+        return Math.max(0, score);
     }
 
     function isLikelyTranscriptNode(node) {
@@ -1316,10 +1394,14 @@
             const text = getCleanTranscriptRootText(node);
             return {
                 node: describeNode(node),
+                score: scoreTranscriptRoot(node),
                 targetId: node.getAttribute?.('target-id') || '',
                 visibility: node.getAttribute?.('visibility') || '',
                 hidden: isHiddenNode(node),
                 forbidden: isForbiddenTranscriptNode(node),
+                segmentCount: node.querySelectorAll?.('transcript-segment-view-model').length || 0,
+                hasPanelVisible: Boolean(node.querySelector?.('[panel-content-visible]')),
+                hasTablist: Boolean(node.querySelector?.('[role="tablist"] button[role="tab"]')),
                 timestampCount: countTimestampsInText(text),
                 sample: text.slice(0, 220),
             };
@@ -1399,10 +1481,19 @@
     }
 
     function findTranscriptButton() {
-        for (const selector of TRANSCRIPT_BUTTON_SELECTORS) {
-            const el = document.querySelector(selector);
-            const clickable = closestClickable(el);
-            if (clickable) return clickable;
+        const scopes = [
+            document.querySelector('ytd-watch-metadata'),
+            document.querySelector('#actions'),
+            document.querySelector('#primary'),
+            document,
+        ].filter(Boolean);
+
+        for (const scope of scopes) {
+            for (const selector of TRANSCRIPT_BUTTON_SELECTORS) {
+                const el = scope.querySelector(selector);
+                const clickable = closestClickable(el);
+                if (clickable) return clickable;
+            }
         }
         return null;
     }
@@ -1420,10 +1511,11 @@
     }
 
     async function ensureTranscriptTabSelected() {
-        const tablist = await waitForElement(
-            () => document.querySelector('chip-bar-view-model[role="tablist"], ytd-transcript-search-panel-renderer [role="tablist"]'),
-            2000
-        );
+        const tablist = await waitForElement(() => {
+            const root = getModernTranscriptRoot() || queryTranscriptRoots()[0];
+            return root?.querySelector?.('[role="tablist"]')
+                || document.querySelector('chip-bar-view-model [role="tablist"], ytd-transcript-search-panel-renderer [role="tablist"]');
+        }, 2000);
         if (!tablist) return;
 
         const tabs = Array.from(tablist.querySelectorAll('button[role="tab"], tp-yt-paper-tab'));
@@ -1828,6 +1920,15 @@
         }
     }
 
+    function getTranscriptParamDebug() {
+        const cached = state.videoId ? state.transcriptParamsByVideo.get(state.videoId) : null;
+        return {
+            cached: Boolean(cached),
+            cachedPreview: typeof cached === 'string' ? cached.slice(0, 32) : '',
+            knownLanguages: state.videoId ? (state.transcriptLanguagesByVideo.get(state.videoId)?.length || 0) : 0,
+        };
+    }
+
     function extractTextFromRuns(runs) {
         if (!Array.isArray(runs) || !runs.length) return '';
         return runs.map(run => run?.text || '').join('').replace(/\s+/g, ' ').trim();
@@ -1958,6 +2059,17 @@
 
     function rememberStrategy(strategy) {
         state.lastStrategy = strategy;
+    }
+
+    function recordAttempt(name, status, details) {
+        const entry = { name, status };
+        if (details && typeof details === 'object') {
+            Object.assign(entry, details);
+        }
+        state.attemptLog.push(entry);
+        if (state.attemptLog.length > 40) {
+            state.attemptLog.shift();
+        }
     }
 
     function rememberError(error) {

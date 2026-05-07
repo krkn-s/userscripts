@@ -10,7 +10,7 @@ The exported transcript includes basic video metadata, the video link, and times
 ## Current Version
 
 - Script file: `userscripts/youtube-transcript-copy-download.user.js`
-- Script version: `2026.04.28.2`
+- Script version: `2026.05.07.1`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 
@@ -20,9 +20,10 @@ The exported transcript includes basic video metadata, the video link, and times
 - Preserves transcript timestamps.
 - Includes video title, channel name, publish date when available, and video URL.
 - Uses multiple transcript retrieval strategies:
-  - visible YouTube transcript panel parsing;
+  - timed text caption endpoints when caption tracks are available;
   - YouTube Innertube transcript data when available;
-  - timed text caption endpoints as a fallback.
+  - visible YouTube transcript panel parsing as a fallback.
+- Prefers data sources over DOM scraping so UI-only YouTube changes are less likely to break extraction.
 - Caches transcript data per video during the current page session.
 - Includes a small debug helper exposed as `window.SYTER_DEBUG()` for troubleshooting.
 
@@ -73,6 +74,7 @@ video-link="https://www.youtube.com/watch?v=..."
 
 - The script runs on `youtube.com` and subdomains such as `www.youtube.com`.
 - It depends on transcripts or captions being available for the video.
+- The script now prefers YouTube transcript or caption data first and only falls back to DOM parsing when needed.
 - YouTube changes its DOM and transcript APIs frequently, so fallback paths are included but cannot guarantee every video will work.
 - Clipboard access depends on the userscript manager and browser permissions.
 
@@ -82,7 +84,7 @@ video-link="https://www.youtube.com/watch?v=..."
 - Open the YouTube transcript panel manually if transcript extraction fails.
 - Confirm that the video actually has captions or a transcript.
 - Check that the userscript manager allows clipboard access.
-- In the browser console, run `SYTER_DEBUG()` to inspect the last extraction strategy, cached line count, DOM transcript candidates, and recent error state.
+- In the browser console, run `SYTER_DEBUG()` to inspect the last extraction strategy, attempt order, caption-track availability, transcript param state, DOM transcript candidates, and recent error state.
 
 ## Development
 

@@ -11,6 +11,7 @@ good alternative.
 
 | Script | Site | What it does | Install |
 | --- | --- | --- | --- |
+| [cPanel Terminal Right Column](docs/cpanel-terminal-right-column.md) | cPanel | Stretches the Terminal panel over the right column, below the page description. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/cpanel-terminal-right-column.user.js) |
 | [DeepSeek Chat Export](docs/deepseek-chat-export.md) | DeepSeek | Exports a conversation (with thinking chain) as Markdown or JSON, reasoning panel collapsed by default. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-chat-export.user.js) |
 | [Notion Export Markdown](docs/notion-export-markdown.md) | Notion | Downloads or copies the current Notion page as Markdown, with optional YAML frontmatter. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/notion-export-markdown.user.js) |
 | [Perplexity Hide Space Threads](docs/perplexity-hide-non-space-threads.md) | Perplexity | Hides Library threads attached to Spaces or Bookmarks. | [Install](https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/perplexity-hide-non-space-threads.user.js) |

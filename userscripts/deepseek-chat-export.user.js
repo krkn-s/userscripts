@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         DeepSeek Chat Export
 // @namespace    https://github.com/krkn-s
-// @version      2026.08.02.5
-// @description  Exports a DeepSeek shared conversation (including the thinking chain) as Markdown or JSON from the share page.
+// @version      2026.11.11.1
+// @description  Exports a DeepSeek conversation (thinking chain included) as Markdown or JSON and keeps its reasoning panel collapsed.
 // @author       krkn-s
 // @homepage     https://github.com/krkn-s/userscripts
 // @homepageURL  https://github.com/krkn-s/userscripts
 // @supportURL   https://github.com/krkn-s/userscripts/issues
 // @downloadURL  https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-chat-export.user.js
 // @updateURL    https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-chat-export.user.js
-// @match        https://chat.deepseek.com/a/chat/s/*
+// @match        https://chat.deepseek.com/*
 // @run-at       document-idle
 // @grant        none
 // @noframes
@@ -19,25 +19,36 @@
 /**
  * DeepSeek Chat Export
  * --------------------
- * Adds two minimalist buttons (MD / JSON) next to the Share button on a
- * DeepSeek shared conversation page. Clicking one downloads the whole
- * conversation — user messages, assistant answers and the thinking chain
- * (reasoning blocks, "Found N web pages" and "Read N pages" tool rows) —
- * as a Markdown file or as structured JSON.
+ * Two behaviours on https://chat.deepseek.com:
  *
- * The message list is DOM-virtualized on the share page: only the messages
- * near the current scroll position actually exist in the DOM. The exporter
- * therefore sweeps the virtualized list (scroll up/down, deduplicating on
+ * 1. Adds two minimalist buttons (MD / JSON) next to the Share button of a
+ *    conversation. Clicking one downloads the whole conversation (user
+ *    messages, assistant answers and the thinking chain: reasoning blocks,
+ *    "Found N web pages" and "Read N pages" tool rows) as a Markdown file or
+ *    as structured JSON.
+ *
+ * 2. Keeps the reasoning panel ("Thought for N seconds") collapsed. DeepSeek
+ *    opens it by default. The script closes it once per message through the
+ *    panel's own toggle, so a manual re-expand by the user still works.
+ *
+ * The chat is a single-page app: a new conversation is reached by navigation,
+ * not by a page load, so the script watches the DOM and injects the buttons
+ * again whenever the header is rendered. No reload is needed.
+ *
+ * The message list is DOM-virtualized: only the messages near the current
+ * scroll position exist in the DOM. The exporter therefore sweeps the
+ * virtualized list (scroll up and down, deduplicating on
  * `data-virtual-list-item-key`) before reading the messages, so the export
- * always covers the entire conversation, not just the visible window.
+ * covers the entire conversation, not just the visible window. A collapsed
+ * reasoning panel may not keep its text in the DOM, so the sweep opens the
+ * panels first and closes them again afterwards.
  */
 
 (function () {
   'use strict';
 
-  const VERSION = '2026.08.02.5';
+  const VERSION = '2026.11.11.1';
   const TOOL = 'deepseek-chat-export/' + VERSION;
-  const SHARE_PREFIX = '/a/chat/s/';
 
   /* ---------------------------------------------------------------- *
    *  Generic helpers
@@ -401,12 +412,23 @@
       // Down, up, down again: covers recycled nodes and any layout jitter.
       for (var pass = 0; pass < 3 && items.size < 200; pass += 1) {
         if (pass % 2 === 0) {
-          for (var y = 0; y <= max; y += step) { scroller.scrollTop = y; await settle(); capture(); }
+          for (var y = 0; y <= max; y += step) {
+            scroller.scrollTop = y;
+            openReasoningNow();
+            await settle();
+            capture();
+          }
           scroller.scrollTop = max;
         } else {
-          for (var y2 = max; y2 >= 0; y2 -= step) { scroller.scrollTop = y2; await settle(); capture(); }
+          for (var y2 = max; y2 >= 0; y2 -= step) {
+            scroller.scrollTop = y2;
+            openReasoningNow();
+            await settle();
+            capture();
+          }
           scroller.scrollTop = 0;
         }
+        openReasoningNow();
         await settle(60);
       }
       scroller.scrollTop = original;
@@ -615,6 +637,7 @@
     setBusy(true);
     showToast(kind === 'json' ? 'Export JSON…' : 'Export Markdown…');
     try {
+      await openReasoning();
       var messages = await collectAllMessages();
       if (!messages.length) { showToast('Aucun message trouvé sur cette page.'); return; }
       var data = buildData(messages);
@@ -636,6 +659,7 @@
       console.error('[deepseek-chat-export]', err);
       showToast('Erreur : ' + (err && err.message ? err.message : err));
     } finally {
+      collapseReasoning();
       busy = false;
       setBusy(false);
     }
@@ -662,9 +686,17 @@
 
   function injectButtons() {
     if (typeof document === 'undefined') return;
-    if (document.querySelector('.ds-export-btn-md')) return;
     var share = findShareButton();
     if (!share) return;
+    // In-app navigation can leave the buttons attached to a previous header, so
+    // check where they sit, not only whether they exist.
+    var existingMd = document.querySelector('.ds-export-btn-md');
+    var existingJson = document.querySelector('.ds-export-btn-json');
+    if (existingMd && existingJson && existingMd.parentNode === share.parentNode && existingJson.parentNode === share.parentNode) {
+      return;
+    }
+    if (existingMd) existingMd.remove();
+    if (existingJson) existingJson.remove();
     var md = makeButton('MD', 'Exporter la conversation en Markdown');
     var json = makeButton('JSON', 'Exporter la conversation en JSON');
     function wire(btn, kind) {
@@ -683,15 +715,95 @@
     mirrorShareAlignment(md, json, share);
   }
 
+  /* ---------------------------------------------------------------- *
+   *  Reasoning panel: closed by default
+   * ---------------------------------------------------------------- */
+
+  // DeepSeek renders the reasoning chain (the "Thought for N seconds" panel)
+  // expanded. Its state lives in DeepSeek's own React tree, so hiding the
+  // content with CSS would leave the chevron and the panel out of sync.
+  // Clicking the panel title is the only supported toggle, and closing each
+  // message once lets a manual re-expand by the user stick.
+  var REASONING_TITLE = /^(Thought for|已思考|思考了)/i;
+  var settledReasoning = new WeakSet();
+
+  function reasoningTitle(messageEl) {
+    var spans = messageEl.querySelectorAll('span');
+    for (var i = 0; i < spans.length; i += 1) {
+      if (REASONING_TITLE.test(nodeText(spans[i]))) return spans[i].parentElement || spans[i];
+    }
+    return null;
+  }
+
+  function reasoningOpen(messageEl) {
+    var blocks = messageEl.querySelectorAll('.ds-think-content');
+    for (var i = 0; i < blocks.length; i += 1) {
+      // Height, not presence: a closed panel may keep its content mounted and
+      // clipped to zero, which getClientRects() alone would report as visible.
+      if (blocks[i].getBoundingClientRect().height > 1) return true;
+    }
+    return false;
+  }
+
+  function collapseReasoning() {
+    var messages = document.querySelectorAll('.ds-message');
+    for (var i = 0; i < messages.length; i += 1) {
+      var messageEl = messages[i];
+      if (settledReasoning.has(messageEl)) continue;
+      var title = reasoningTitle(messageEl);
+      if (!title) continue;
+      // Nothing rendered yet: leave the message unsettled so a later pass can
+      // still close it once the panel exists.
+      if (!messageEl.querySelector('.ds-think-content')) continue;
+      settledReasoning.add(messageEl);
+      if (reasoningOpen(messageEl)) title.click();
+    }
+  }
+
+  // The export needs the reasoning text, and a collapsed panel does not
+  // necessarily keep it in the DOM. Open the panels that are mounted right
+  // now, then let collapseReasoning() close them again once the messages are
+  // captured. Called on every sweep step as well, because the virtualized list
+  // remounts panels in their closed state while scrolling.
+  function openReasoningNow() {
+    var opened = 0;
+    var messages = document.querySelectorAll('.ds-message');
+    for (var i = 0; i < messages.length; i += 1) {
+      var messageEl = messages[i];
+      var title = reasoningTitle(messageEl);
+      if (!title || reasoningOpen(messageEl)) continue;
+      settledReasoning.delete(messageEl);
+      title.click();
+      opened += 1;
+    }
+    return opened;
+  }
+
+  async function openReasoning() {
+    if (openReasoningNow()) await settle(160);
+  }
+
   function start() {
     injectStyles();
     injectButtons();
-    var observer = new MutationObserver(function () {
-      if (!document.querySelector('.ds-export-btn-md')) injectButtons();
-    });
+    collapseReasoning();
+    // Opening a conversation or starting a new one happens inside the
+    // single-page app, so the buttons and the collapsed panels must be
+    // re-applied whenever the DOM changes. The 200 ms debounce keeps streaming
+    // answers cheap, and an export pauses the pass so its own clicks stand.
+    var scheduled = false;
+    var sync = function () {
+      if (scheduled || busy) return;
+      scheduled = true;
+      setTimeout(function () {
+        scheduled = false;
+        if (busy) return;
+        injectButtons();
+        collapseReasoning();
+      }, 200);
+    };
+    var observer = new MutationObserver(sync);
     observer.observe(document.body, { childList: true, subtree: true });
-    // Stop watching after a while to keep the page cheap.
-    setTimeout(function () { observer.disconnect(); }, 300000);
   }
 
   /* ---------------------------------------------------------------- *
@@ -703,20 +815,23 @@
     htmlToMarkdown: htmlToMarkdown,
     parseMessage: parseMessage,
     parseThinking: parseThinking,
+    collapseReasoning: collapseReasoning,
+    openReasoning: openReasoning,
+    reasoningTitle: reasoningTitle,
+    reasoningOpen: reasoningOpen,
     buildData: buildData,
     buildJson: buildJson,
     buildMarkdown: buildMarkdown
   };
 
-  // Boot in the browser only, and only on the share page.
+  // Boot in the browser only. The whole chat origin is matched so a
+  // conversation started without a page reload still gets the buttons.
   if (typeof document !== 'undefined' && typeof location !== 'undefined') {
-    if ((location.pathname || '').indexOf(SHARE_PREFIX) !== -1) {
-      var boot = function () { start(); };
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', boot);
-      } else {
-        boot();
-      }
+    var boot = function () { start(); };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot);
+    } else {
+      boot();
     }
   }
 

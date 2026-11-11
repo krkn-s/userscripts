@@ -1,24 +1,29 @@
 # DeepSeek Chat Export
 
-A small Safari-compatible userscript for shared DeepSeek conversations.
+A small Safari-compatible userscript for DeepSeek conversations.
 
-It adds two minimalist buttons — `MD` and `JSON` — next to the Share button on
-`https://chat.deepseek.com/a/chat/s/*`. Clicking one downloads the whole
-conversation as a file:
+It does two things on `https://chat.deepseek.com`:
 
-- `MD` produces a readable Markdown document (title, export metadata, and each
-  message with French section labels: `Utilisateur`, `DeepSeek`, `Pensée`,
-  `Réponse`).
-- `JSON` produces the structured dataset with the same content.
+- It adds two minimalist buttons, `MD` and `JSON`, next to the Share button of
+  a conversation. Clicking one downloads the whole conversation as a file.
+- It keeps the reasoning panel (`Thought for N seconds`) collapsed. DeepSeek
+  opens it by default, and the script closes it once per message through the
+  panel's own toggle, so expanding it by hand still works.
+
+`MD` produces a readable Markdown document (title, export metadata, and each
+message with French section labels: `Utilisateur`, `DeepSeek`, `Pensée`,
+`Réponse`). `JSON` produces the structured dataset with the same content.
 
 Both exports include the **thinking chain** of every assistant message: the
 reasoning segments, the `Found N web pages` search steps and the `Read N pages`
-steps with their source links.
+steps with their source links. The panels are opened for the duration of the
+export and closed again afterwards, so keeping them collapsed never removes the
+reasoning from the file.
 
 ## Current Version
 
 - Script file: `userscripts/deepseek-chat-export.user.js`
-- Script version: `2026.08.02.5`
+- Script version: `2026.11.11.1`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 
@@ -26,6 +31,12 @@ steps with their source links.
 
 - No dependencies, no network requests, no runtime payloads: everything is
   parsed from the rendered page.
+- Reasoning panel collapsed by default: each message is closed once through the
+  panel's own toggle, so the chevron and the panel stay in sync with DeepSeek's
+  state, and a manual re-expand is not undone.
+- Buttons survive in-app navigation: a new conversation, or a thread opened
+  without a page reload, gets the `MD` and `JSON` buttons as soon as its header
+  is rendered.
 - Full-history export, not just the visible messages: the DeepSeek message list
   is DOM-virtualized, so the script sweeps the list (scrolls up and down,
   deduplicating on `data-virtual-list-item-key`) before reading messages.
@@ -34,8 +45,9 @@ steps with their source links.
   from the original LaTeX source stored in the page).
 - Thinking chain blocks: reasoning text, search steps and read steps with
   source links.
-- No data mutation: it only reads the DOM and restores the scroll position
-  after the scan.
+- No content is altered: the only DOM actions are the reasoning toggles, which
+  use the page's own control, and the scroll position is restored after the
+  scan.
 
 ## Installation
 
@@ -48,7 +60,8 @@ Then install:
 1. Open `userscripts/deepseek-chat-export.user.js`.
 2. Add it to your userscript manager.
 3. Make sure it is enabled for `chat.deepseek.com`.
-4. Open or reload the shared conversation page.
+4. Open the chat page. No reload is needed after that, new conversations
+   included.
 
 If your userscript manager supports direct raw URLs, use:
 
@@ -58,7 +71,8 @@ https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-c
 
 ## Usage
 
-1. Open a shared DeepSeek conversation: `https://chat.deepseek.com/a/chat/s/<id>`.
+1. Start a new conversation or open an existing one. The buttons appear as
+   soon as the conversation header is rendered.
 2. Click `MD` to download the conversation as Markdown, or `JSON` for the
    structured export.
 3. The file is named `deepseek-<title-slug>-<date>.<ext>`.
@@ -71,7 +85,7 @@ https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-c
   "url": "https://chat.deepseek.com/a/chat/s/<id>",
   "shareId": "<id>",
   "exportedAt": "2026-08-02T10:00:00.000Z",
-  "tool": "deepseek-chat-export/2026.08.02.5",
+  "tool": "deepseek-chat-export/2026.11.11.1",
   "messages": [
     { "role": "user", "content": "…" },
     {
@@ -90,7 +104,11 @@ https://raw.githubusercontent.com/krkn-s/userscripts/main/userscripts/deepseek-c
 
 ## Compatibility Notes
 
-- Runs on `https://chat.deepseek.com/a/chat/s/*` (shared conversations only).
+- Runs on every page of `https://chat.deepseek.com` and only acts where a
+  conversation header exists.
+- The reasoning panel is recognized by its title (`Thought for N seconds`, plus
+  the Chinese labels). Another wording leaves the panel untouched, and the
+  export keeps working.
 - The extraction relies on DOM classes prefixed `ds-` (`.ds-message`,
   `.ds-assistant-message-main-content`, `.ds-think-content`, `.ds-markdown`);
   DeepSeek keeps those stable, but layout or class changes may require an

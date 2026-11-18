@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps, basic metadata, and its comments.
-// @version      2026.11.18.3
+// @version      2026.11.18.4
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -54,6 +54,8 @@
         'button[aria-label*="hide transcript" i]',
     ].join(', ');
     const COMMENT_SECTION_ID = 'comment-item-section';
+    const COMMENT_DOM_THREAD_SELECTORS = ['ytd-comment-thread-renderer', 'yt-comment-thread-view-model'];
+    const COMMENT_DOM_NODE_SELECTORS = ['ytd-comment-view-model', 'yt-comment-view-model', 'ytd-comment-renderer'];
     const COMMENT_REQUEST_BUDGET = 100;
     const COMMENT_MAX_ENTRIES = 3000;
     const COMMENT_PAGE_DELAY_MS = 80;
@@ -119,6 +121,8 @@
         attemptLog: [],
         transcriptToggleNode: null,
         transcriptPanelOpenedByScript: false,
+        pageConfig: null,
+        innertubeConnection: null,
     };
 
     const style = `
@@ -247,6 +251,8 @@
             state.lastCommentsError = null;
             state.transcriptToggleNode = null;
             state.transcriptPanelOpenedByScript = false;
+            state.pageConfig = null;
+            state.innertubeConnection = null;
             state.poToken = null;
             state.potCaptureInFlight = null;
             state.lastStrategy = null;
@@ -267,6 +273,8 @@
         state.lastCommentsError = null;
         state.transcriptToggleNode = null;
         state.transcriptPanelOpenedByScript = false;
+        state.pageConfig = null;
+        state.innertubeConnection = null;
         state.poToken = null;
         state.potCaptureInFlight = null;
         state.lastStrategy = null;
@@ -596,48 +604,55 @@
             state.transcriptsByVideo.delete(state.videoId);
         }
 
-        recordAttempt('api:caption-tracks', 'start', getCaptionTrackDebug());
-        const viaCaptionTrack = await fetchCaptionTrackTranscript();
-        if (viaCaptionTrack?.length) {
+        const candidates = [];
+        const consider = (source, lines, details) => {
+            if (!lines?.length) {
+                recordAttempt(source, 'miss', details);
+                return false;
+            }
+            candidates.push({ source, lines });
+            if (lines.length > 1) return true;
+
+            // A single line usually means the source returned a partial
+            // transcript: keep looking, but never open the panel for it.
+            recordAttempt(source, 'partial', { lines: lines.length });
+            return false;
+        };
+        const take = entry => {
             rememberError(null);
-            recordAttempt('api:caption-tracks', 'success', { lines: viaCaptionTrack.length });
-            state.transcriptCache = viaCaptionTrack;
-            cacheTranscript(state.videoId, viaCaptionTrack);
-            return viaCaptionTrack;
+            recordAttempt(entry.source, 'success', { lines: entry.lines.length });
+            state.transcriptCache = entry.lines;
+            cacheTranscript(state.videoId, entry.lines);
+            return entry.lines;
+        };
+
+        recordAttempt('api:caption-tracks', 'start', getCaptionTrackDebug());
+        if (consider('api:caption-tracks', await fetchCaptionTrackTranscript(), getCaptionTrackDebug())) {
+            return take(candidates[candidates.length - 1]);
         }
-        recordAttempt('api:caption-tracks', 'miss', getCaptionTrackDebug());
 
         recordAttempt('api:innertube', 'start', getTranscriptParamDebug());
-        const viaInnertube = await fetchInnertubeTranscriptLines();
-        if (viaInnertube?.length) {
-            rememberError(null);
-            recordAttempt('api:innertube', 'success', { lines: viaInnertube.length });
-            state.transcriptCache = viaInnertube;
-            return viaInnertube;
+        if (consider('api:innertube', await fetchInnertubeTranscriptLines(), getTranscriptParamDebug())) {
+            return take(candidates[candidates.length - 1]);
         }
-        recordAttempt('api:innertube', 'miss', getTranscriptParamDebug());
 
         recordAttempt('dom:existing', 'start');
-        const viaDomExisting = await fetchDomTranscript({ allowOpen: false });
-        if (viaDomExisting.length) {
-            rememberError(null);
-            recordAttempt('dom:existing', 'success', { lines: viaDomExisting.length });
-            state.transcriptCache = viaDomExisting;
-            cacheTranscript(state.videoId, viaDomExisting);
-            return viaDomExisting;
+        if (consider('dom:existing', await fetchDomTranscript({ allowOpen: false }))) {
+            return take(candidates[candidates.length - 1]);
         }
-        recordAttempt('dom:existing', 'miss');
 
-        recordAttempt('dom:open-panel', 'start');
-        const viaDomOpened = await fetchDomTranscript({ allowOpen: true });
-        if (viaDomOpened.length) {
-            rememberError(null);
-            recordAttempt('dom:open-panel', 'success', { lines: viaDomOpened.length });
-            state.transcriptCache = viaDomOpened;
-            cacheTranscript(state.videoId, viaDomOpened);
-            return viaDomOpened;
+        if (!candidates.length) {
+            recordAttempt('dom:open-panel', 'start');
+            if (consider('dom:open-panel', await fetchDomTranscript({ allowOpen: true }))) {
+                return take(candidates[candidates.length - 1]);
+            }
         }
-        recordAttempt('dom:open-panel', 'miss');
+
+        if (candidates.length) {
+            const best = candidates.reduce((a, b) => (b.lines.length > a.lines.length ? b : a));
+            recordAttempt('longest', 'success', { source: best.source, lines: best.lines.length });
+            return take(best);
+        }
 
         throw new Error('Transcript unavailable.');
     }
@@ -838,7 +853,10 @@
     function getCaptionTracks() {
         const response = getPlayerResponse();
         const tracks = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        return Array.isArray(tracks) ? tracks : [];
+        if (Array.isArray(tracks) && tracks.length) return tracks;
+
+        const fallback = getPageConfig().captionTracks;
+        return Array.isArray(fallback) ? fallback : [];
     }
 
     function pickCaptionTrack() {
@@ -973,6 +991,9 @@
         const { allowOpen = true } = options;
 
         rememberStrategy(allowOpen ? 'dom:existing' : 'dom:existing-only');
+        if (setTranscriptSearchValue('')) {
+            await sleep(400);
+        }
         await ensureTranscriptTabSelected();
 
         let modernLines = parseModernTranscript();
@@ -993,6 +1014,9 @@
             rememberStrategy('dom:open-panel');
             await openTranscriptPanel();
             await ensureTranscriptTabSelected();
+            if (setTranscriptSearchValue('')) {
+                await sleep(400);
+            }
             await waitForElement(() => (
                 queryModernTranscriptSegments().length
                 || queryTranscriptNodes().length
@@ -1626,6 +1650,31 @@
         return normalizeWhitespace(tab?.getAttribute?.('aria-label') || tab?.textContent || '');
     }
 
+    function findTranscriptSearchInput() {
+        return document.querySelector(
+            'ytd-transcript-search-panel-renderer textarea, '
+            + 'textarea[aria-label*="transcript" i], '
+            + 'textarea[placeholder*="transcript" i]'
+        );
+    }
+
+    function readTranscriptSearchValue() {
+        const input = findTranscriptSearchInput();
+        return input ? String(input.value || '') : '';
+    }
+
+    function setTranscriptSearchValue(value) {
+        const input = findTranscriptSearchInput();
+        if (!input) return false;
+
+        const next = String(value || '');
+        if (String(input.value || '') === next) return false;
+
+        input.value = next;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+    }
+
     function getSelectedTranscriptTab() {
         return queryTranscriptTabs().find(tab => (
             tab.getAttribute('aria-selected') === 'true' || tab.selected === true
@@ -1673,6 +1722,7 @@
         return {
             panelOpen: isTranscriptPanelOpen(),
             tabLabel: getTranscriptTabLabel(tab),
+            searchValue: readTranscriptSearchValue(),
         };
     }
 
@@ -1697,6 +1747,7 @@
         }
 
         state.transcriptPanelOpenedByScript = false;
+        setTranscriptSearchValue(uiState.searchValue);
         showTranscriptPanelAgain();
     }
 
@@ -1778,11 +1829,10 @@
         const params = await ensureTranscriptParams(videoId);
         if (!params) return null;
 
-        const apiKey = getInnertubeApiKey();
-        const context = getInnertubeContext();
-        if (!apiKey || !context) return null;
+        const connection = await getInnertubeConnection();
+        if (!connection) return null;
 
-        const headers = getInnertubeHeaders();
+        const { apiKey, context, headers } = connection;
 
         try {
             const triedParams = new Set();
@@ -2007,15 +2057,131 @@
         return cloneData(context);
     }
 
-    function getInnertubeHeaders() {
+    function getPageHtml() {
+        try {
+            return document.documentElement?.innerHTML || '';
+        } catch {
+            return '';
+        }
+    }
+
+    function getPageConfig() {
+        if (state.pageConfig) return state.pageConfig;
+
+        const html = getPageHtml();
+        const config = {
+            apiKey: readHtmlMatch(html, /"INNERTUBE_API_KEY":"([^"]+)"/),
+            clientVersion: readHtmlMatch(html, /"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/),
+            language: document.documentElement?.lang || '',
+            captionTracks: extractCaptionTracksFromHtml(html),
+            commentsContinuation: extractCommentsContinuationFromHtml(html),
+            transcriptParams: extractParamFromHtml(html),
+        };
+
+        // A page that has not been rendered yet has no key: read it again later.
+        if (config.apiKey) state.pageConfig = config;
+        return config;
+    }
+
+    function readHtmlMatch(html, pattern) {
+        const match = typeof html === 'string' ? html.match(pattern) : null;
+        return match ? match[1] : '';
+    }
+
+    function extractCaptionTracksFromHtml(html) {
+        if (typeof html !== 'string' || !html) return [];
+
+        const marker = '"captionTracks":';
+        const start = html.indexOf(marker);
+        if (start === -1) return [];
+
+        const arrayStart = html.indexOf('[', start + marker.length);
+        if (arrayStart === -1) return [];
+
+        const slice = readJsonArrayAt(html, arrayStart);
+        if (!slice) return [];
+
+        try {
+            const tracks = JSON.parse(slice);
+            return Array.isArray(tracks) ? tracks : [];
+        } catch (error) {
+            logError('caption track parse error', error);
+            return [];
+        }
+    }
+
+    function readJsonArrayAt(html, start) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = start; i < html.length; i += 1) {
+            const char = html[i];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (char === '\\') escaped = true;
+                else if (char === '"') inString = false;
+                continue;
+            }
+            if (char === '"') {
+                inString = true;
+            } else if (char === '[') {
+                depth += 1;
+            } else if (char === ']') {
+                depth -= 1;
+                if (depth === 0) return html.slice(start, i + 1);
+            }
+        }
+
+        return null;
+    }
+
+    function extractCommentsContinuationFromHtml(html) {
+        if (typeof html !== 'string' || !html) return null;
+
+        const marker = '"sectionIdentifier":"comment-item-section"';
+        const index = html.indexOf(marker);
+        if (index === -1) return null;
+
+        const window = html.slice(Math.max(0, index - 4000), index);
+        const matches = Array.from(window.matchAll(/"continuationCommand":\{"token":"([^"]+)"/g));
+        if (!matches.length) return null;
+
+        return decodeParam(matches[matches.length - 1][1]);
+    }
+
+    async function getInnertubeConnection() {
+        if (state.innertubeConnection) return state.innertubeConnection;
+
+        const config = getPageConfig();
+        const apiKey = getInnertubeApiKey() || config.apiKey;
+        if (!apiKey) return null;
+
+        const clientVersion = ytcfgGet('INNERTUBE_CONTEXT_CLIENT_VERSION') || config.clientVersion || '';
+        const clientName = ytcfgGet('INNERTUBE_CONTEXT_CLIENT_NAME') || 1;
+        const context = getInnertubeContext() || buildInnertubeContext(clientVersion, config.language);
+
         const headers = {
             'Content-Type': 'application/json',
         };
-        const clientName = ytcfgGet('INNERTUBE_CONTEXT_CLIENT_NAME');
-        const clientVersion = ytcfgGet('INNERTUBE_CONTEXT_CLIENT_VERSION');
         if (clientName) headers['X-Youtube-Client-Name'] = String(clientName);
         if (clientVersion) headers['X-Youtube-Client-Version'] = String(clientVersion);
-        return headers;
+
+        state.innertubeConnection = { apiKey, context, headers };
+        return state.innertubeConnection;
+    }
+
+    function buildInnertubeContext(clientVersion, language) {
+        const client = {
+            clientName: 'WEB',
+            clientVersion: clientVersion || '2.20240101.00.00',
+        };
+
+        const parts = String(language || '').replace('_', '-').split('-');
+        if (parts[0]) client.hl = parts[0];
+        if (parts[1]) client.gl = parts[1].toUpperCase();
+
+        return { client };
     }
 
     function cloneData(value) {
@@ -2054,9 +2220,7 @@
 
     function extractTranscriptParamFromDocument() {
         try {
-            const html = document.documentElement?.innerHTML;
-            if (!html) return null;
-            return extractParamFromHtml(html);
+            return getPageConfig().transcriptParams;
         } catch {
             return null;
         }
@@ -2176,9 +2340,10 @@
                 return { threads: [], status: 'error', truncated: false };
             })
             .then(result => {
-                state.lastCommentsStatus = result.status;
-                cacheComments(videoId, result);
-                return result;
+                const resolved = result.threads?.length ? result : mergeDomComments(result);
+                state.lastCommentsStatus = resolved.status;
+                cacheComments(videoId, resolved);
+                return resolved;
             })
             .finally(() => {
                 if (state.commentFetchInFlight?.promise === promise) {
@@ -2190,14 +2355,25 @@
         return promise;
     }
 
+    function mergeDomComments(result) {
+        const threads = parseDomComments();
+        if (!threads.length) return result;
+
+        recordAttempt('dom:comments', 'success', { threads: threads.length });
+        return {
+            threads,
+            status: 'ok',
+            truncated: true,
+        };
+    }
+
     async function fetchCommentsForVideo(videoId, options = {}) {
-        const apiKey = getInnertubeApiKey();
-        const context = getInnertubeContext();
-        if (!apiKey || !context) {
+        const connection = await getInnertubeConnection();
+        if (!connection) {
             return { threads: [], status: 'innertube-unavailable', truncated: false };
         }
 
-        const headers = getInnertubeHeaders();
+        const { apiKey, context, headers } = connection;
         const continuation = await ensureCommentsContinuation(videoId, apiKey, context, headers);
         if (!continuation) {
             return { threads: [], status: 'unavailable', truncated: false };
@@ -2305,6 +2481,9 @@
             || findCommentsContinuation(window.__ytInitialData);
         if (fromInitial) return fromInitial;
 
+        const fromPage = getPageConfig().commentsContinuation;
+        if (fromPage) return fromPage;
+
         const response = await requestInnertubeNext(apiKey, context, headers, { videoId });
         return findCommentsContinuation(response);
     }
@@ -2386,7 +2565,7 @@
             const threadRenderer = item?.commentThreadRenderer;
             if (!threadRenderer) return;
 
-            const entry = readCommentEntry(threadRenderer.comment, framework);
+            const entry = readCommentEntry(threadRenderer, framework);
             if (!entry) return;
 
             threads.push({
@@ -2414,7 +2593,7 @@
 
             const threadRenderer = item?.commentThreadRenderer;
             if (threadRenderer) {
-                const entry = readCommentEntry(threadRenderer.comment, framework);
+                const entry = readCommentEntry(threadRenderer, framework);
                 if (entry) replies.push(entry);
                 const token = readReplyToken(threadRenderer);
                 if (token) tokens.push(token);
@@ -2472,8 +2651,14 @@
         if (container.commentRenderer) {
             return readLegacyCommentRenderer(container.commentRenderer);
         }
+        if (container.comment?.commentRenderer) {
+            return readLegacyCommentRenderer(container.comment.commentRenderer);
+        }
 
-        const viewModel = container.commentViewModel?.commentViewModel || container.commentViewModel;
+        const viewModel = container.commentViewModel?.commentViewModel
+            || container.commentViewModel
+            || container.comment?.commentViewModel?.commentViewModel
+            || container.comment?.commentViewModel;
         if (viewModel?.commentId) {
             const payload = framework?.[viewModel.commentId];
             return payload ? readCommentEntityPayload(viewModel.commentId, payload) : null;
@@ -2595,6 +2780,52 @@
             .join('\n');
     }
 
+    // DOM comments: only what YouTube already rendered, never scrolled into view.
+
+    function parseDomComments() {
+        const threadSelector = COMMENT_DOM_THREAD_SELECTORS.join(', ');
+        const nodeSelector = COMMENT_DOM_NODE_SELECTORS.join(', ');
+        const threads = [];
+        const seen = new Set();
+
+        document.querySelectorAll(threadSelector).forEach(threadNode => {
+            const nodes = Array.from(threadNode.querySelectorAll(nodeSelector));
+            const entry = readDomComment(nodes.shift());
+            if (!entry || seen.has(entry.id)) return;
+            seen.add(entry.id);
+
+            const replies = [];
+            nodes.forEach(node => {
+                const reply = readDomComment(node);
+                if (reply && !seen.has(reply.id)) {
+                    seen.add(reply.id);
+                    replies.push(reply);
+                }
+            });
+
+            threads.push({ ...entry, replies, replyToken: null });
+        });
+
+        return threads;
+    }
+
+    function readDomComment(node) {
+        if (!node) return null;
+
+        const text = normalizeCommentText(node.querySelector('#content-text')?.textContent || '');
+        if (!text) return null;
+
+        return {
+            id: node.getAttribute?.('comment-id')
+                || node.getAttribute?.('id')
+                || `${node.tagName?.toLowerCase() || 'comment'}:${text.slice(0, 32)}`,
+            author: normalizeWhitespace(node.querySelector('#author-text')?.textContent || ''),
+            published: normalizeWhitespace(node.querySelector('#published-time-text')?.textContent || ''),
+            likes: normalizeWhitespace(node.querySelector('#vote-count-middle')?.textContent || ''),
+            text,
+        };
+    }
+
     function formatCommentsSection(comments) {
         const threads = comments?.threads || [];
         const lines = ['----------------------------------------'];
@@ -2620,7 +2851,8 @@
     function appendCommentLines(lines, entry, indent) {
         const pad = ' '.repeat(indent);
         const meta = [entry.published, formatCommentLikes(entry.likes)].filter(Boolean).join(' · ');
-        lines.push(`${pad}[@${entry.author || 'unknown'}]${meta ? ` ${meta}` : ''}`);
+        const author = String(entry.author || '').replace(/^@+/, '').trim() || 'unknown';
+        lines.push(`${pad}[@${author}]${meta ? ` ${meta}` : ''}`);
         entry.text.split('\n').forEach(line => lines.push(`${pad}${line}`));
         lines.push('');
     }

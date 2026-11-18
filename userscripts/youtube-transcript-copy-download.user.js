@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps, basic metadata, and its comments.
-// @version      2026.11.18.1
+// @version      2026.11.18.2
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -89,6 +89,7 @@
         lastDomDebug: null,
         debugBridgeInjected: false,
         attemptLog: [],
+        transcriptToggleNode: null,
     };
 
     const style = `
@@ -215,6 +216,7 @@
             state.transcriptCache = Array.isArray(cachedLines) ? cachedLines : null;
             state.lastCommentsStatus = null;
             state.lastCommentsError = null;
+            state.transcriptToggleNode = null;
             state.poToken = null;
             state.potCaptureInFlight = null;
             state.lastStrategy = null;
@@ -233,6 +235,7 @@
         state.commentFetchInFlight = null;
         state.lastCommentsStatus = null;
         state.lastCommentsError = null;
+        state.transcriptToggleNode = null;
         state.poToken = null;
         state.potCaptureInFlight = null;
         state.lastStrategy = null;
@@ -514,7 +517,14 @@
             throw new Error('No video detected.');
         }
 
-        const lines = await loadTranscriptLines();
+        const uiState = captureTranscriptUi();
+        let lines;
+        try {
+            lines = await loadTranscriptLines();
+        } finally {
+            await restoreTranscriptUi(uiState);
+        }
+
         if (!lines.length) {
             throw new Error('Transcript is empty.');
         }
@@ -1518,6 +1528,7 @@
 
         const button = findTranscriptButton();
         if (button) {
+            state.transcriptToggleNode = button;
             button.click();
             return;
         }
@@ -1526,7 +1537,10 @@
         if (overflow) {
             overflow.click();
             const item = await waitForTranscriptMenuItem(1500);
-            if (item) item.click();
+            if (item) {
+                state.transcriptToggleNode = item;
+                item.click();
+            }
         }
     }
 
@@ -1560,12 +1574,101 @@
         return waitForElement(() => findTranscriptButton(), timeout);
     }
 
+    function findTranscriptTablist() {
+        const root = getModernTranscriptRoot() || queryTranscriptRoots()[0];
+        return root?.querySelector?.('[role="tablist"]')
+            || document.querySelector('chip-bar-view-model [role="tablist"], ytd-transcript-search-panel-renderer [role="tablist"]')
+            || null;
+    }
+
+    function queryTranscriptTabs() {
+        const tablist = findTranscriptTablist();
+        if (!tablist) return [];
+        return Array.from(tablist.querySelectorAll('button[role="tab"], tp-yt-paper-tab'));
+    }
+
+    function getTranscriptTabLabel(tab) {
+        return normalizeWhitespace(tab?.getAttribute?.('aria-label') || tab?.textContent || '');
+    }
+
+    function getSelectedTranscriptTab() {
+        return queryTranscriptTabs().find(tab => (
+            tab.getAttribute('aria-selected') === 'true' || tab.selected === true
+        )) || null;
+    }
+
+    function findTranscriptTabByLabel(label) {
+        const target = normalizeString(label);
+        if (!target) return null;
+        return queryTranscriptTabs().find(tab => normalizeString(getTranscriptTabLabel(tab)) === target) || null;
+    }
+
+    function findTranscriptPanelElement() {
+        const root = getScoredTranscriptRoots()[0]?.node;
+        if (!root?.closest) return null;
+        return root.closest('ytd-engagement-panel-section-list-renderer, yt-engagement-panel-section-list-renderer');
+    }
+
+    function isTranscriptPanelOpen(panel = findTranscriptPanelElement()) {
+        if (!panel) return false;
+        const visibility = panel.getAttribute?.('visibility') || '';
+        if (visibility) return visibility === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED';
+        return !isExplicitlyHiddenNode(panel);
+    }
+
+    function captureTranscriptUi() {
+        const tab = getSelectedTranscriptTab();
+        return {
+            panelOpen: isTranscriptPanelOpen(),
+            tabLabel: getTranscriptTabLabel(tab),
+        };
+    }
+
+    async function restoreTranscriptUi(uiState) {
+        if (!uiState) return;
+
+        if (uiState.panelOpen) {
+            const currentLabel = getTranscriptTabLabel(getSelectedTranscriptTab());
+            if (uiState.tabLabel && currentLabel !== uiState.tabLabel) {
+                const tab = findTranscriptTabByLabel(uiState.tabLabel);
+                if (tab) {
+                    tab.click();
+                    await sleep(120);
+                }
+            }
+            return;
+        }
+
+        closeTranscriptPanel();
+    }
+
+    function closeTranscriptPanel() {
+        const panel = findTranscriptPanelElement();
+        if (!panel || !isTranscriptPanelOpen(panel)) return false;
+
+        const closeButton = panel.querySelector(
+            '#visibility-button button, '
+            + 'ytd-engagement-panel-title-header-renderer button[aria-label*="close" i], '
+            + 'yt-engagement-panel-title-header-renderer button[aria-label*="close" i], '
+            + 'ytd-engagement-panel-title-header-renderer button[aria-label*="hide" i], '
+            + 'yt-engagement-panel-title-header-renderer button[aria-label*="hide" i]'
+        );
+        if (closeButton) {
+            closeButton.click();
+            return true;
+        }
+
+        const toggle = state.transcriptToggleNode;
+        if (toggle?.isConnected) {
+            toggle.click();
+            return true;
+        }
+
+        return false;
+    }
+
     async function ensureTranscriptTabSelected() {
-        const tablist = await waitForElement(() => {
-            const root = getModernTranscriptRoot() || queryTranscriptRoots()[0];
-            return root?.querySelector?.('[role="tablist"]')
-                || document.querySelector('chip-bar-view-model [role="tablist"], ytd-transcript-search-panel-renderer [role="tablist"]');
-        }, 2000);
+        const tablist = await waitForElement(findTranscriptTablist, 2000);
         if (!tablist) return;
 
         const tabs = Array.from(tablist.querySelectorAll('button[role="tab"], tp-yt-paper-tab'));

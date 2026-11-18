@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps, basic metadata, and its comments.
-// @version      2026.11.18.2
+// @version      2026.11.18.3
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -25,6 +25,34 @@
     const HOST_ID = `${PREFIX}-button-bar`;
     const BUTTON_IDS = ['copy', 'download'];
     const TIMEDTEXT_MARKER = '/api/timedtext?';
+    const TRANSCRIPT_HIDE_STYLE_ID = `${PREFIX}-transcript-reading`;
+    const TRANSCRIPT_HIDE_STYLE = `
+        ytd-engagement-panel-section-list-renderer[target-id*="transcript" i],
+        yt-engagement-panel-section-list-renderer[target-id*="transcript" i],
+        ytd-transcript-renderer,
+        yt-transcript-renderer {
+            position: absolute !important;
+            top: 0 !important;
+            left: -20000px !important;
+            width: 400px !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+    `;
+    const TRANSCRIPT_CLOSE_SELECTORS = [
+        '#visibility-button button',
+        'ytd-engagement-panel-title-header-renderer button[aria-label*="close" i]',
+        'yt-engagement-panel-title-header-renderer button[aria-label*="close" i]',
+        'ytd-engagement-panel-title-header-renderer button[aria-label*="hide" i]',
+        'yt-engagement-panel-title-header-renderer button[aria-label*="hide" i]',
+        'ytd-engagement-panel-title-header-renderer button[aria-label*="fermer" i]',
+        'yt-engagement-panel-title-header-renderer button[aria-label*="masquer" i]',
+        'ytd-engagement-panel-title-header-renderer button[aria-label*="cerrar" i]',
+        'yt-engagement-panel-title-header-renderer button[aria-label*="ocultar" i]',
+        'ytd-engagement-panel-title-header-renderer button[aria-label*="schlie" i]',
+        'button[aria-label*="close transcript" i]',
+        'button[aria-label*="hide transcript" i]',
+    ].join(', ');
     const COMMENT_SECTION_ID = 'comment-item-section';
     const COMMENT_REQUEST_BUDGET = 100;
     const COMMENT_MAX_ENTRIES = 3000;
@@ -90,6 +118,7 @@
         debugBridgeInjected: false,
         attemptLog: [],
         transcriptToggleNode: null,
+        transcriptPanelOpenedByScript: false,
     };
 
     const style = `
@@ -217,6 +246,7 @@
             state.lastCommentsStatus = null;
             state.lastCommentsError = null;
             state.transcriptToggleNode = null;
+            state.transcriptPanelOpenedByScript = false;
             state.poToken = null;
             state.potCaptureInFlight = null;
             state.lastStrategy = null;
@@ -236,6 +266,7 @@
         state.lastCommentsStatus = null;
         state.lastCommentsError = null;
         state.transcriptToggleNode = null;
+        state.transcriptPanelOpenedByScript = false;
         state.poToken = null;
         state.potCaptureInFlight = null;
         state.lastStrategy = null;
@@ -245,6 +276,7 @@
         clearTimeout(state.buttonRetryTimer);
         state.buttonRetryTimer = null;
         destroyButtonHost();
+        showTranscriptPanelAgain();
     }
 
     function injectStyleOnce() {
@@ -1526,6 +1558,9 @@
         const existingNodes = queryTranscriptNodes();
         if (existingNodes.length) return;
 
+        hideTranscriptPanelWhileReading();
+        state.transcriptPanelOpenedByScript = true;
+
         const button = findTranscriptButton();
         if (button) {
             state.transcriptToggleNode = button;
@@ -1611,9 +1646,26 @@
 
     function isTranscriptPanelOpen(panel = findTranscriptPanelElement()) {
         if (!panel) return false;
+
         const visibility = panel.getAttribute?.('visibility') || '';
-        if (visibility) return visibility === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED';
-        return !isExplicitlyHiddenNode(panel);
+        if (visibility === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') return true;
+        if (visibility === 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN') return false;
+        if (isExplicitlyHiddenNode(panel)) return false;
+
+        const box = panel.getBoundingClientRect?.();
+        return Boolean(box && box.width > 0 && box.height > 0);
+    }
+
+    function hideTranscriptPanelWhileReading() {
+        if (document.getElementById(TRANSCRIPT_HIDE_STYLE_ID)) return;
+        const el = document.createElement('style');
+        el.id = TRANSCRIPT_HIDE_STYLE_ID;
+        el.textContent = TRANSCRIPT_HIDE_STYLE;
+        (document.head || document.documentElement).appendChild(el);
+    }
+
+    function showTranscriptPanelAgain() {
+        document.getElementById(TRANSCRIPT_HIDE_STYLE_ID)?.remove();
     }
 
     function captureTranscriptUi() {
@@ -1625,42 +1677,59 @@
     }
 
     async function restoreTranscriptUi(uiState) {
-        if (!uiState) return;
+        if (!uiState) {
+            showTranscriptPanelAgain();
+            return;
+        }
 
-        if (uiState.panelOpen) {
+        if (!uiState.panelOpen) {
+            closeTranscriptPanel();
+            await waitForTranscriptPanelClosed();
+        } else if (uiState.tabLabel) {
             const currentLabel = getTranscriptTabLabel(getSelectedTranscriptTab());
-            if (uiState.tabLabel && currentLabel !== uiState.tabLabel) {
+            if (currentLabel !== uiState.tabLabel) {
                 const tab = findTranscriptTabByLabel(uiState.tabLabel);
                 if (tab) {
                     tab.click();
                     await sleep(120);
                 }
             }
-            return;
         }
 
-        closeTranscriptPanel();
+        state.transcriptPanelOpenedByScript = false;
+        showTranscriptPanelAgain();
+    }
+
+    async function waitForTranscriptPanelClosed(timeout = 400) {
+        const deadline = Date.now() + timeout;
+        while (Date.now() < deadline) {
+            if (!isTranscriptPanelOpen()) return true;
+            await sleep(50);
+        }
+        return !isTranscriptPanelOpen();
     }
 
     function closeTranscriptPanel() {
         const panel = findTranscriptPanelElement();
-        if (!panel || !isTranscriptPanelOpen(panel)) return false;
 
-        const closeButton = panel.querySelector(
-            '#visibility-button button, '
-            + 'ytd-engagement-panel-title-header-renderer button[aria-label*="close" i], '
-            + 'yt-engagement-panel-title-header-renderer button[aria-label*="close" i], '
-            + 'ytd-engagement-panel-title-header-renderer button[aria-label*="hide" i], '
-            + 'yt-engagement-panel-title-header-renderer button[aria-label*="hide" i]'
-        );
-        if (closeButton) {
-            closeButton.click();
-            return true;
+        if (panel && isTranscriptPanelOpen(panel)) {
+            const closeButton = panel.querySelector(TRANSCRIPT_CLOSE_SELECTORS);
+            if (closeButton) {
+                closeButton.click();
+                return true;
+            }
         }
+
+        if (!state.transcriptPanelOpenedByScript) return false;
 
         const toggle = state.transcriptToggleNode;
         if (toggle?.isConnected) {
             toggle.click();
+            return true;
+        }
+
+        if (panel) {
+            panel.setAttribute('visibility', 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN');
             return true;
         }
 

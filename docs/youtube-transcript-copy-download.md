@@ -10,7 +10,7 @@ The exported text includes basic video metadata, the video link, timestamped tra
 ## Current Version
 
 - Script file: `userscripts/youtube-transcript-copy-download.user.js`
-- Script version: `2026.11.18.3`
+- Script version: `2026.11.18.4`
 - Owner: <https://github.com/krkn-s>
 - Repository: <https://github.com/krkn-s/userscripts>
 
@@ -28,6 +28,10 @@ The exported text includes basic video metadata, the video link, timestamped tra
 - Opens the transcript panel only as a last resort, when the API paths cannot return segments.
 - Restores the page after extraction: the transcript panel is rendered off-screen while its segments are read, then closed again, and a panel that was already open keeps its previously selected tab.
 - Fetches comments through the YouTube Innertube `next` endpoint, one continuation per page, so the page does not have to be scrolled.
+- Reads the Innertube configuration (API key, client version), the caption tracks, the transcript parameters, and the comments continuation from the page HTML, because `window.ytcfg` and `window.ytInitialData` are not visible from the userscript context.
+- Falls back to the comments already rendered in the page when both Innertube attempts return nothing, and marks that partial output with `comments-truncated="true"`.
+- Clears a stale transcript search filter while reading the panel, then restores it.
+- Treats a single-line transcript as suspicious: the remaining sources are tried, and the longest result wins.
 - Caps comment retrieval at 100 requests and 3000 entries per export, then marks the output with `comments-truncated="true"`.
 - Keeps the transcript usable when comments cannot be fetched: the section then holds a `comments-status` line instead of failing the export.
 - Shows progress on the button while comments load, and caches transcripts and comments per video during the current page session.
@@ -104,6 +108,8 @@ comments-status="unavailable"
 - Reading segments from the page requires the transcript panel to render, so that fallback cannot avoid the panel entirely. While the script reads it, a temporary style moves the panel off-screen, so nothing appears in place of the recommendations. The panel is then closed and the style removed.
 - Capturing a poToken toggles the subtitle button twice for about 200 ms, which can flash captions on the video.
 - Comments come from the same Innertube surface YouTube uses. Loading a video with many comments takes several seconds and stops at the request cap, which sets `comments-truncated="true"`.
+- The DOM comments fallback can only return the threads YouTube has already rendered: the count is partial by nature, and it is marked as such.
+- A transcript panel left with a search filter only renders the matching segments. The script clears that filter for the duration of the read and puts it back afterwards.
 - Comments are read-only: the script never posts, likes, or replies.
 - YouTube changes its DOM and transcript APIs frequently, so fallback paths are included but cannot guarantee every video will work.
 - Clipboard access depends on the userscript manager and browser permissions.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
 // @description  Copy or download the transcript of the current YouTube video with timestamps, basic metadata, and its comments.
-// @version      2026.11.18.4
+// @version      2026.11.18.5
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -26,6 +26,9 @@
     const BUTTON_IDS = ['copy', 'download'];
     const TIMEDTEXT_MARKER = '/api/timedtext?';
     const TRANSCRIPT_HIDE_STYLE_ID = `${PREFIX}-transcript-reading`;
+    const TRANSCRIPT_RENDER_TIMEOUT_MS = 8000;
+    const TRANSCRIPT_RENDER_POLL_MS = 200;
+    const TRANSCRIPT_RENDER_STABLE_READS = 6;
     const TRANSCRIPT_HIDE_STYLE = `
         ytd-engagement-panel-section-list-renderer[target-id*="transcript" i],
         yt-engagement-panel-section-list-renderer[target-id*="transcript" i],
@@ -641,7 +644,8 @@
             return take(candidates[candidates.length - 1]);
         }
 
-        if (!candidates.length) {
+        const hasFullCandidate = candidates.some(entry => entry.lines.length > 1);
+        if (!hasFullCandidate) {
             recordAttempt('dom:open-panel', 'start');
             if (consider('dom:open-panel', await fetchDomTranscript({ allowOpen: true }))) {
                 return take(candidates[candidates.length - 1]);
@@ -1017,13 +1021,24 @@
             if (setTranscriptSearchValue('')) {
                 await sleep(400);
             }
+            rememberStrategy('dom:modern-opened');
             await waitForElement(() => (
                 queryModernTranscriptSegments().length
                 || queryTranscriptNodes().length
                 || getModernTranscriptRoot()?.querySelector?.('[panel-content-visible], transcript-segment-view-model')
             ), 7000);
 
-            rememberStrategy('dom:modern-opened');
+            // YouTube renders the active segment first and fills the rest after:
+            // reading right now would export a single line.
+            const renderedLines = await collectRenderedTranscriptLines();
+            if (renderedLines.length) {
+                state.lastDomDebug = buildDomDebug(
+                    queryModernTranscriptSegments(),
+                    renderedLines.map(line => ({ line }))
+                );
+                return renderedLines;
+            }
+
             modernLines = parseModernTranscript();
             if (modernLines.length) {
                 state.lastDomDebug = buildDomDebug(queryModernTranscriptSegments(), modernLines.map(line => ({ line })));
@@ -1149,6 +1164,80 @@
 
     function queryTranscriptRoots() {
         return getScoredTranscriptRoots().map(item => item.node);
+    }
+
+    // The panel renders the active segment first and fills the rest a moment
+    // later: wait until the rendered segment list stops growing before reading.
+
+    function findTranscriptScrollContainer() {
+        const root = getModernTranscriptRoot();
+        if (!root) return null;
+
+        const candidates = [
+            root.querySelector('#segments-container'),
+            root.querySelector('yt-section-list-renderer'),
+            root,
+        ];
+
+        for (const node of candidates) {
+            if (node && node.scrollHeight > node.clientHeight + 20) return node;
+        }
+
+        return null;
+    }
+
+    function transcriptTimeToSeconds(time) {
+        const parts = String(time || '').split(':').map(part => Number(part));
+        if (!parts.length || parts.some(part => !Number.isFinite(part))) return 0;
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return 0;
+    }
+
+    async function collectRenderedTranscriptLines() {
+        const segments = await collectRenderedTranscriptSegments();
+        const lines = dedupeLines(segments.map(item => `${item.time} ${item.text}`));
+        return isContaminatedTranscriptLines(lines) ? [] : lines;
+    }
+
+    async function collectRenderedTranscriptSegments() {
+        const collected = new Map();
+        const record = () => {
+            queryModernTranscriptSegments().forEach(node => {
+                const parsed = parseModernTranscriptSegment(node);
+                if (parsed) collected.set(`${parsed.time} ${parsed.text}`, parsed);
+            });
+        };
+
+        record();
+
+        const container = findTranscriptScrollContainer();
+        const originalScrollTop = container ? container.scrollTop : 0;
+        if (container) container.scrollTop = container.scrollHeight;
+
+        const deadline = Date.now() + TRANSCRIPT_RENDER_TIMEOUT_MS;
+        let previousSize = collected.size;
+        let stableReads = 0;
+
+        while (Date.now() < deadline) {
+            await sleep(TRANSCRIPT_RENDER_POLL_MS);
+            record();
+
+            if (collected.size === previousSize) {
+                stableReads += 1;
+                if (stableReads >= TRANSCRIPT_RENDER_STABLE_READS) break;
+                continue;
+            }
+
+            stableReads = 0;
+            previousSize = collected.size;
+            if (container) container.scrollTop = container.scrollHeight;
+        }
+
+        if (container) container.scrollTop = originalScrollTop;
+
+        return Array.from(collected.values())
+            .sort((a, b) => transcriptTimeToSeconds(a.time) - transcriptTimeToSeconds(b.time));
     }
 
     function getScoredTranscriptRoots() {

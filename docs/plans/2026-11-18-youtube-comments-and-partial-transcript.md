@@ -21,6 +21,18 @@ are invisible, and every Innertube strategy is skipped.
 - The DOM comments fallback can only return what is rendered: partial output must be marked, not silently passed as complete.
 - Existing transcript strategy order must stay the same, and the panel must still stay closed when a source already returned lines.
 
+## Follow-up
+
+The one-line transcript was not a filter problem: the panel renders the active
+segment first, then the rest, and the reader took the first rendered node.
+On the reported video the saved page holds 424 segments (0:00 to 27:06), so the
+full transcript was always available a second later.
+
+The reader now accumulates segments until the rendered list stops growing, sweeps
+the list to its end to pull the last batch, sorts by timestamp, and restores the
+scroll position. The panel path is also allowed when every other source returned
+a single line, which is the case that produced the one-line export.
+
 ## Outcome
 
 Shipped in `2026.11.18.4`.

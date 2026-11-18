@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube.com — Transcript Copy & Download
-// @description  Copy or download the transcript of the current YouTube video with timestamps and basic metadata.
-// @version      2026.05.07.1
+// @description  Copy or download the transcript of the current YouTube video with timestamps, basic metadata, and its comments.
+// @version      2026.11.18.1
 // @author       https://github.com/krkn-s
 // @namespace    https://github.com/krkn-s
 // @homepageURL  https://github.com/krkn-s/userscripts
@@ -25,6 +25,10 @@
     const HOST_ID = `${PREFIX}-button-bar`;
     const BUTTON_IDS = ['copy', 'download'];
     const TIMEDTEXT_MARKER = '/api/timedtext?';
+    const COMMENT_SECTION_ID = 'comment-item-section';
+    const COMMENT_REQUEST_BUDGET = 100;
+    const COMMENT_MAX_ENTRIES = 3000;
+    const COMMENT_PAGE_DELAY_MS = 80;
     const DEBUG_REQUEST_EVENT = `${PREFIX}:debug-request`;
     const DEBUG_ATTR = 'data-syter-debug';
     const FORBIDDEN_TRANSCRIPT_CONTAINER_SELECTORS = [
@@ -74,6 +78,10 @@
         poToken: null,
         potCaptureInFlight: null,
         transcriptsByVideo: new Map(),
+        commentsByVideo: new Map(),
+        commentFetchInFlight: null,
+        lastCommentsStatus: null,
+        lastCommentsError: null,
         transcriptParamsByVideo: new Map(),
         transcriptLanguagesByVideo: new Map(),
         lastStrategy: null,
@@ -119,6 +127,11 @@
         }
         .${PREFIX}-bar--fallback {
             margin: 12px 0;
+        }
+        .${PREFIX}-btn[disabled] {
+            opacity: 0.6;
+            cursor: default;
+            pointer-events: none;
         }
         .${PREFIX}-toast {
             position: fixed;
@@ -200,6 +213,8 @@
             state.videoId = videoId;
             const cachedLines = state.transcriptsByVideo.get(videoId);
             state.transcriptCache = Array.isArray(cachedLines) ? cachedLines : null;
+            state.lastCommentsStatus = null;
+            state.lastCommentsError = null;
             state.poToken = null;
             state.potCaptureInFlight = null;
             state.lastStrategy = null;
@@ -215,6 +230,9 @@
     function resetState() {
         state.videoId = null;
         state.transcriptCache = null;
+        state.commentFetchInFlight = null;
+        state.lastCommentsStatus = null;
+        state.lastCommentsError = null;
         state.poToken = null;
         state.potCaptureInFlight = null;
         state.lastStrategy = null;
@@ -267,6 +285,7 @@
             textBlob: buildTextBlobDebug(roots),
             captionTracks: getCaptionTrackDebug(),
             transcriptParams: getTranscriptParamDebug(),
+            comments: getCommentsDebug(),
             attempts: state.attemptLog.slice(-16),
         };
     }
@@ -407,8 +426,17 @@
         btn.className = `${PREFIX}-btn`;
         btn.type = 'button';
         btn.textContent = label;
+        btn.dataset.syterLabel = label;
         btn.addEventListener('click', handler);
         return btn;
+    }
+
+    function setButtonBusy(button, busy, label) {
+        if (!button) return;
+        button.disabled = Boolean(busy);
+        button.textContent = busy
+            ? (label || 'Working...')
+            : (button.dataset.syterLabel || '');
     }
 
     function clearButtons() {
@@ -426,9 +454,13 @@
         host.remove();
     }
 
-    async function onCopy() {
+    async function onCopy(event) {
+        const button = event?.currentTarget;
+        setButtonBusy(button, true, 'Copying...');
         try {
-            const text = await buildTranscriptText();
+            const text = await buildTranscriptText({
+                onProgress: progress => setButtonBusy(button, true, describeCommentProgress(progress)),
+            });
             await writeToClipboard(text);
             showToast('Transcript copied.');
         } catch (error) {
@@ -437,12 +469,18 @@
             logDebugSnapshot();
             logError('copy failed', error);
             showToast(error.message || 'Unable to copy transcript.', true);
+        } finally {
+            setButtonBusy(button, false);
         }
     }
 
-    async function onDownload() {
+    async function onDownload(event) {
+        const button = event?.currentTarget;
+        setButtonBusy(button, true, 'Downloading...');
         try {
-            const text = await buildTranscriptText();
+            const text = await buildTranscriptText({
+                onProgress: progress => setButtonBusy(button, true, describeCommentProgress(progress)),
+            });
             const info = getVideoInfo();
             const fileName = `${sanitize(info.title)}-${sanitize(info.channel)}.txt`;
             const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -461,10 +499,17 @@
             logDebugSnapshot();
             logError('download failed', error);
             showToast(error.message || 'Unable to download transcript.', true);
+        } finally {
+            setButtonBusy(button, false);
         }
     }
 
-    async function buildTranscriptText() {
+    function describeCommentProgress(progress) {
+        const total = (progress?.threads || 0) + (progress?.replies || 0);
+        return `Comments: ${total}`;
+    }
+
+    async function buildTranscriptText(options = {}) {
         if (!state.videoId) {
             throw new Error('No video detected.');
         }
@@ -483,7 +528,12 @@
             headerParts.push(`video-published="${info.published}"`);
         }
         headerParts.push(`video-link="${info.url}"`, '----------------------------------------', '');
-        return headerParts.join('\n') + lines.join('\n');
+
+        const comments = await loadCommentsSection(options);
+        return [
+            headerParts.join('\n') + lines.join('\n'),
+            formatCommentsSection(comments),
+        ].join('\n');
     }
 
     async function loadTranscriptLines() {
@@ -1932,6 +1982,493 @@
     function extractTextFromRuns(runs) {
         if (!Array.isArray(runs) || !runs.length) return '';
         return runs.map(run => run?.text || '').join('').replace(/\s+/g, ' ').trim();
+    }
+
+    // Comments: loaded through the Innertube "next" endpoint, one continuation per page.
+
+    async function loadCommentsSection(options = {}) {
+        const videoId = state.videoId;
+        if (!videoId) return { threads: [], status: 'no-video', truncated: false };
+
+        const cached = state.commentsByVideo.get(videoId);
+        if (cached) return cached;
+
+        if (state.commentFetchInFlight?.videoId === videoId) {
+            return state.commentFetchInFlight.promise;
+        }
+
+        const promise = fetchCommentsForVideo(videoId, options)
+            .catch(error => {
+                logError('comments fetch failed', error);
+                state.lastCommentsError = error?.message || String(error);
+                return { threads: [], status: 'error', truncated: false };
+            })
+            .then(result => {
+                state.lastCommentsStatus = result.status;
+                cacheComments(videoId, result);
+                return result;
+            })
+            .finally(() => {
+                if (state.commentFetchInFlight?.promise === promise) {
+                    state.commentFetchInFlight = null;
+                }
+            });
+
+        state.commentFetchInFlight = { videoId, promise };
+        return promise;
+    }
+
+    async function fetchCommentsForVideo(videoId, options = {}) {
+        const apiKey = getInnertubeApiKey();
+        const context = getInnertubeContext();
+        if (!apiKey || !context) {
+            return { threads: [], status: 'innertube-unavailable', truncated: false };
+        }
+
+        const headers = getInnertubeHeaders();
+        const continuation = await ensureCommentsContinuation(videoId, apiKey, context, headers);
+        if (!continuation) {
+            return { threads: [], status: 'unavailable', truncated: false };
+        }
+
+        const threads = [];
+        const seenThreads = new Set();
+        const replyQueue = [];
+        let budget = COMMENT_REQUEST_BUDGET;
+        let nextToken = continuation;
+        let entries = 0;
+        let truncated = false;
+
+        while (nextToken && budget > 0) {
+            const response = await requestInnertubeNext(apiKey, context, headers, { continuation: nextToken });
+            budget -= 1;
+            if (!response) {
+                truncated = true;
+                break;
+            }
+
+            const page = parseCommentThreadPage(response);
+            page.threads.forEach(thread => {
+                if (seenThreads.has(thread.id)) return;
+                seenThreads.add(thread.id);
+                threads.push(thread);
+                entries += thread.replies.length + 1;
+                if (thread.replyToken) {
+                    replyQueue.push({ thread, token: thread.replyToken });
+                }
+            });
+            nextToken = page.nextToken;
+            reportCommentProgress(options, threads);
+
+            if (entries >= COMMENT_MAX_ENTRIES) {
+                truncated = true;
+                break;
+            }
+            if (nextToken) await sleep(COMMENT_PAGE_DELAY_MS);
+        }
+        if (nextToken) truncated = true;
+
+        while (replyQueue.length && budget > 0) {
+            const { thread, token } = replyQueue.shift();
+            const response = await requestInnertubeNext(apiKey, context, headers, { continuation: token });
+            budget -= 1;
+            if (!response) {
+                truncated = true;
+                break;
+            }
+
+            const page = parseCommentReplyPage(response);
+            entries += appendCommentReplies(thread, page.replies);
+            page.tokens.forEach(next => replyQueue.push({ thread, token: next }));
+            reportCommentProgress(options, threads);
+
+            if (entries >= COMMENT_MAX_ENTRIES) {
+                truncated = true;
+                break;
+            }
+            if (replyQueue.length) await sleep(COMMENT_PAGE_DELAY_MS);
+        }
+        if (replyQueue.length) truncated = true;
+
+        return {
+            threads,
+            status: threads.length ? 'ok' : 'empty',
+            truncated,
+        };
+    }
+
+    function reportCommentProgress(options, threads) {
+        if (typeof options.onProgress !== 'function') return;
+        const replies = threads.reduce((total, thread) => total + thread.replies.length, 0);
+        options.onProgress({ threads: threads.length, replies });
+    }
+
+    function cacheComments(videoId, comments) {
+        if (!videoId || !comments) return;
+        state.commentsByVideo.set(videoId, comments);
+        if (state.commentsByVideo.size > 6) {
+            const oldestKey = state.commentsByVideo.keys().next().value;
+            if (oldestKey && oldestKey !== videoId) {
+                state.commentsByVideo.delete(oldestKey);
+            }
+        }
+    }
+
+    function getCommentsDebug() {
+        const cached = state.videoId ? state.commentsByVideo.get(state.videoId) : null;
+        const threads = cached?.threads || [];
+        return {
+            cached: Boolean(cached),
+            status: cached?.status || state.lastCommentsStatus || '',
+            threads: threads.length,
+            replies: threads.reduce((total, thread) => total + thread.replies.length, 0),
+            truncated: Boolean(cached?.truncated),
+            inFlight: Boolean(state.commentFetchInFlight),
+            lastError: state.lastCommentsError,
+        };
+    }
+
+    async function ensureCommentsContinuation(videoId, apiKey, context, headers) {
+        const fromInitial = findCommentsContinuation(window.ytInitialData)
+            || findCommentsContinuation(window.__ytInitialData);
+        if (fromInitial) return fromInitial;
+
+        const response = await requestInnertubeNext(apiKey, context, headers, { videoId });
+        return findCommentsContinuation(response);
+    }
+
+    function findCommentsContinuation(root) {
+        const stack = [root];
+        const seen = new Set();
+
+        while (stack.length) {
+            const current = stack.pop();
+            if (!current || typeof current !== 'object') continue;
+            if (seen.has(current)) continue;
+            seen.add(current);
+
+            if (current.itemSectionRenderer) {
+                const token = readCommentSectionToken(current.itemSectionRenderer);
+                if (token) return token;
+            }
+
+            Object.values(current).forEach(value => {
+                if (value && typeof value === 'object') stack.push(value);
+            });
+        }
+
+        return null;
+    }
+
+    function readCommentSectionToken(section) {
+        if (!section || section.sectionIdentifier !== COMMENT_SECTION_ID) return null;
+
+        for (const item of section.contents || []) {
+            const token = readContinuationToken(item);
+            if (token) return token;
+        }
+        for (const continuation of section.continuations || []) {
+            const token = continuation?.nextContinuationData?.continuation;
+            if (token) return token;
+        }
+
+        return null;
+    }
+
+    async function requestInnertubeNext(apiKey, context, headers, body) {
+        if (!apiKey || !context) return null;
+
+        const payload = { context: cloneData(context) };
+        Object.keys(body || {}).forEach(key => {
+            if ((body || {})[key]) payload[key] = body[key];
+        });
+
+        try {
+            const response = await fetch(`${location.origin}/youtubei/v1/next?key=${encodeURIComponent(apiKey)}&prettyPrint=false`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers,
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return await response.json();
+        } catch (error) {
+            logError('comments request error', error);
+            return null;
+        }
+    }
+
+    function parseCommentThreadPage(response) {
+        const framework = indexFrameworkUpdates(response);
+        const threads = [];
+        let nextToken = null;
+
+        collectContinuationItems(response).forEach(item => {
+            if (item?.continuationItemRenderer) {
+                nextToken = readContinuationToken(item) || nextToken;
+                return;
+            }
+
+            const threadRenderer = item?.commentThreadRenderer;
+            if (!threadRenderer) return;
+
+            const entry = readCommentEntry(threadRenderer.comment, framework);
+            if (!entry) return;
+
+            threads.push({
+                ...entry,
+                replies: parseThreadTeaserReplies(threadRenderer, framework),
+                replyToken: readReplyToken(threadRenderer),
+            });
+        });
+
+        return { threads, nextToken };
+    }
+
+    function parseCommentReplyPage(response) {
+        const framework = indexFrameworkUpdates(response);
+        const replies = [];
+        const tokens = [];
+        const items = collectContinuationItems(response);
+
+        items.forEach(item => {
+            if (item?.continuationItemRenderer) {
+                const token = readContinuationToken(item);
+                if (token) tokens.push(token);
+                return;
+            }
+
+            const threadRenderer = item?.commentThreadRenderer;
+            if (threadRenderer) {
+                const entry = readCommentEntry(threadRenderer.comment, framework);
+                if (entry) replies.push(entry);
+                const token = readReplyToken(threadRenderer);
+                if (token) tokens.push(token);
+                return;
+            }
+
+            const entry = readCommentEntry(item, framework);
+            if (entry) replies.push(entry);
+        });
+
+        collectSubThreadTokens(items).forEach(token => {
+            if (!tokens.includes(token)) tokens.push(token);
+        });
+
+        return { replies, tokens };
+    }
+
+    function collectContinuationItems(response) {
+        const items = [];
+        const endpoints = response?.onResponseReceivedEndpoints;
+        if (!Array.isArray(endpoints)) return items;
+
+        endpoints.forEach(endpoint => {
+            const reloaded = endpoint?.reloadContinuationItemsCommand?.continuationItems;
+            if (Array.isArray(reloaded) && reloaded.length) {
+                items.push(...reloaded);
+                return;
+            }
+            const appended = endpoint?.appendContinuationItemsAction?.continuationItems;
+            if (Array.isArray(appended) && appended.length) {
+                items.push(...appended);
+            }
+        });
+
+        return items;
+    }
+
+    function indexFrameworkUpdates(response) {
+        const map = Object.create(null);
+        const mutations = response?.frameworkUpdates?.entityBatchUpdate?.mutations;
+        if (!Array.isArray(mutations)) return map;
+
+        mutations.forEach(mutation => {
+            const payload = mutation?.payload?.commentEntityPayload;
+            const commentId = payload?.properties?.commentId;
+            if (commentId) map[commentId] = payload;
+        });
+
+        return map;
+    }
+
+    function readCommentEntry(container, framework) {
+        if (!container || typeof container !== 'object') return null;
+
+        if (container.commentRenderer) {
+            return readLegacyCommentRenderer(container.commentRenderer);
+        }
+
+        const viewModel = container.commentViewModel?.commentViewModel || container.commentViewModel;
+        if (viewModel?.commentId) {
+            const payload = framework?.[viewModel.commentId];
+            return payload ? readCommentEntityPayload(viewModel.commentId, payload) : null;
+        }
+
+        if (container.properties?.commentId) {
+            return readCommentEntityPayload(container.properties.commentId, container);
+        }
+
+        return null;
+    }
+
+    function readCommentEntityPayload(commentId, payload) {
+        const properties = payload?.properties || {};
+        const text = normalizeCommentText(properties.content?.content || properties.content || '');
+        if (!text) return null;
+
+        return {
+            id: commentId,
+            author: normalizeWhitespace(payload.author?.displayName || ''),
+            published: normalizeWhitespace(properties.publishedTime || ''),
+            likes: normalizeWhitespace(payload.toolbar?.likeCountLiked || ''),
+            text,
+        };
+    }
+
+    function readLegacyCommentRenderer(renderer) {
+        if (!renderer || typeof renderer !== 'object') return null;
+
+        const text = normalizeCommentText(
+            (renderer.contentText?.runs || []).map(run => run?.text || '').join('')
+            || renderer.contentText?.simpleText
+            || ''
+        );
+        if (!text) return null;
+
+        const author = normalizeWhitespace(
+            renderer.authorText?.simpleText
+            || (renderer.authorText?.runs || []).map(run => run?.text || '').join('')
+        );
+        const published = normalizeWhitespace(
+            (renderer.publishedTimeText?.runs || []).map(run => run?.text || '').join('')
+            || renderer.publishedTimeText?.simpleText
+            || ''
+        );
+
+        return {
+            id: renderer.commentId || `${author}:${text.slice(0, 32)}`,
+            author,
+            published,
+            likes: normalizeWhitespace(renderer.voteCount?.simpleText || ''),
+            text,
+        };
+    }
+
+    function parseThreadTeaserReplies(threadRenderer, framework) {
+        const contents = threadRenderer?.replies?.commentRepliesRenderer?.contents;
+        if (!Array.isArray(contents)) return [];
+        return contents
+            .map(item => readCommentEntry(item, framework))
+            .filter(Boolean);
+    }
+
+    function appendCommentReplies(thread, replies) {
+        if (!Array.isArray(replies) || !replies.length) return 0;
+
+        const known = new Set(thread.replies.map(reply => reply.id));
+        let added = 0;
+        replies.forEach(reply => {
+            if (known.has(reply.id)) return;
+            known.add(reply.id);
+            thread.replies.push(reply);
+            added += 1;
+        });
+        return added;
+    }
+
+    function readContinuationToken(node) {
+        return node?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token || null;
+    }
+
+    function readReplyToken(threadRenderer) {
+        const replies = threadRenderer?.replies?.commentRepliesRenderer;
+        if (!replies) return null;
+
+        for (const item of replies.contents || []) {
+            const token = readContinuationToken(item);
+            if (token) return token;
+        }
+        for (const continuation of replies.continuations || []) {
+            const token = continuation?.nextContinuationData?.continuation;
+            if (token) return token;
+        }
+
+        return null;
+    }
+
+    function collectSubThreadTokens(items) {
+        const tokens = [];
+        items.forEach(item => {
+            const viewModel = item?.commentViewModel?.commentViewModel || item?.commentViewModel;
+            const subThreads = viewModel?.replies?.subThreads;
+            if (!Array.isArray(subThreads)) return;
+
+            subThreads.forEach(subThread => {
+                const token = readReplyToken(subThread?.commentThreadRenderer);
+                if (token && !tokens.includes(token)) tokens.push(token);
+            });
+        });
+        return tokens;
+    }
+
+    function normalizeCommentText(value) {
+        return String(value || '')
+            .replace(/\r\n?/g, '\n')
+            .split('\n')
+            .map(line => line.replace(/[ \t]+/g, ' ').trim())
+            .filter(Boolean)
+            .join('\n');
+    }
+
+    function formatCommentsSection(comments) {
+        const threads = comments?.threads || [];
+        const lines = ['----------------------------------------'];
+
+        if (!threads.length) {
+            lines.push(`comments-status="${describeCommentsStatus(comments?.status)}"`, '');
+            return lines.join('\n');
+        }
+
+        const total = threads.reduce((count, thread) => count + 1 + thread.replies.length, 0);
+        lines.push(`comments-count="${total}"`);
+        if (comments?.truncated) lines.push('comments-truncated="true"');
+        lines.push('');
+
+        threads.forEach(thread => {
+            appendCommentLines(lines, thread, 0);
+            thread.replies.forEach(reply => appendCommentLines(lines, reply, 2));
+        });
+
+        return `${lines.join('\n').trimEnd()}\n`;
+    }
+
+    function appendCommentLines(lines, entry, indent) {
+        const pad = ' '.repeat(indent);
+        const meta = [entry.published, formatCommentLikes(entry.likes)].filter(Boolean).join(' · ');
+        lines.push(`${pad}[@${entry.author || 'unknown'}]${meta ? ` ${meta}` : ''}`);
+        entry.text.split('\n').forEach(line => lines.push(`${pad}${line}`));
+        lines.push('');
+    }
+
+    function formatCommentLikes(value) {
+        const text = normalizeWhitespace(value || '');
+        if (!text || text === '0') return '';
+        if (/like|j'aime/i.test(text)) return text;
+        return text === '1' ? '1 like' : `${text} likes`;
+    }
+
+    function describeCommentsStatus(status) {
+        const labels = {
+            'no-video': 'no video',
+            'innertube-unavailable': 'innertube unavailable',
+            'empty': 'no comments',
+            'error': 'fetch failed',
+            'unavailable': 'unavailable',
+        };
+        return labels[status] || 'unavailable';
     }
 
     function dedupeLines(lines) {
